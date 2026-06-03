@@ -33,9 +33,7 @@ public class RealTimeMap {
 
     public RealTimeMap(IEventBus modEventBus, ModContainer modContainer) {
         LOGGER.info("RealTimeMap Mod: Initializing...");
-
         modContainer.registerConfig(ModConfig.Type.COMMON, Config.SPEC);
-
         modEventBus.addListener(this::commonSetup);
         NeoForge.EVENT_BUS.addListener(this::onServerStarted);
         NeoForge.EVENT_BUS.addListener(this::onServerStopped);
@@ -149,9 +147,9 @@ public class RealTimeMap {
                         return;
                     }
                     byte[] bytes = is.readAllBytes();
-                    String contentType = "text/html";
-                    if (path.endsWith(".css")) contentType = "text/css";
-                    if (path.endsWith(".js")) contentType = "application/javascript";
+                    String contentType = "text/html; charset=UTF-8";
+                    if (path.endsWith(".css")) contentType = "text/css; charset=UTF-8";
+                    if (path.endsWith(".js")) contentType = "application/javascript; charset=UTF-8";
                     if (path.endsWith(".png")) contentType = "image/png";
                     sendResponse(exchange, bytes, contentType, 200);
                 } catch (Exception e) {
@@ -174,10 +172,17 @@ public class RealTimeMap {
         exchange.getResponseHeaders().add("Access-Control-Allow-Origin", "*");
         exchange.getResponseHeaders().add("Access-Control-Allow-Methods", "GET, OPTIONS, POST");
         exchange.getResponseHeaders().add("Access-Control-Allow-Headers", "Content-Type,Authorization");
+        
+        // Ensure UTF-8 for JSON and Text
+        if (contentType.contains("application/json") || contentType.contains("text/")) {
+            if (!contentType.contains("charset=")) {
+                contentType += "; charset=UTF-8";
+            }
+        }
         exchange.getResponseHeaders().add("Content-Type", contentType);
 
         if ("OPTIONS".equals(exchange.getRequestMethod())) {
-            exchange.sendResponseHeaders(24, -1);
+            exchange.sendResponseHeaders(204, -1);
             return;
         }
 
@@ -185,7 +190,7 @@ public class RealTimeMap {
             String providedKey = exchange.getRequestHeaders().getFirst("Authorization");
             if (Config.apiKey != null && !Config.apiKey.isEmpty() && !"changeme".equals(Config.apiKey)) {
                 if (providedKey == null || !providedKey.equals(Config.apiKey)) {
-                    byte[] error = "Unauthorized".getBytes();
+                    byte[] error = "Unauthorized".getBytes(StandardCharsets.UTF_8);
                     exchange.sendResponseHeaders(401, error.length);
                     try (OutputStream os = exchange.getResponseBody()) { os.write(error); }
                     return;
