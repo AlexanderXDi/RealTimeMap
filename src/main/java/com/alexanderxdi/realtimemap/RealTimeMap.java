@@ -80,69 +80,87 @@ public class RealTimeMap {
 
             // Map Data API
             server.createContext("/api/map/chunk", (exchange) -> {
-                if (minecraftServer == null) {
-                    sendResponse(exchange, "{\"error\": \"Server not ready\"}", "application/json", 503);
-                    return;
-                }
-
-                String path = exchange.getRequestURI().getPath();
-                // Expected: /api/map/chunk/minecraft:overworld/0/0
-                String[] parts = path.split("/");
-                if (parts.length < 7) {
-                    sendResponse(exchange, "{\"error\": \"Invalid path format\"}", "application/json", 400);
-                    return;
-                }
-
-                String dimName = parts[4];
-                int x = Integer.parseInt(parts[5]);
-                int z = Integer.parseInt(parts[6]);
-
-                for (ServerLevel level : minecraftServer.getAllLevels()) {
-                    if (level.dimension().location().toString().equals(dimName)) {
-                        // Using a simple JSON generator instead of Map/Jackson
-                        var data = MapScanner.getChunkData(level, x, z);
-                        StringBuilder json = new StringBuilder("{");
-                        json.append("\"x\":").append(data.get("x")).append(",");
-                        json.append("\"z\":").append(data.get("z")).append(",");
-                        json.append("\"heights\":[");
-                        int[] h = (int[]) data.get("heights");
-                        for(int i=0; i<h.length; i++) {
-                            json.append(h[i]).append(i < h.length-1 ? "," : "");
-                        }
-                        json.append("],\"blocks\":[");
-                        String[] b = (String[]) data.get("blocks");
-                        for(int i=0; i<b.length; i++) {
-                            json.append("\"").append(b[i]).append("\"").append(i < b.length-1 ? "," : "");
-                        }
-                        json.append("]}");
-                        sendResponse(exchange, json.toString(), "application/json");
+                try {
+                    if (minecraftServer == null) {
+                        sendResponse(exchange, "{\"error\": \"Server not ready\"}", "application/json", 503);
                         return;
                     }
-                }
-                sendResponse(exchange, "{\"error\": \"Dimension not found\"}", "application/json", 404);
-            });
 
-            // Internal Web Server (Static Files)
-            if (Config.enableInternalServer) {
-                server.createContext("/", (exchange) -> {
                     String path = exchange.getRequestURI().getPath();
-                    if (path.equals("/")) path = "/index.html";
-                    
-                    try (InputStream is = getClass().getResourceAsStream("/web" + path)) {
-                        if (is == null) {
-                            exchange.sendResponseHeaders(404, 0);
-                            exchange.close();
+                    String[] parts = path.split("/");
+                    if (parts.length < 6) {
+                        sendResponse(exchange, "{\"error\": \"Invalid path format\"}", "application/json", 400);
+                        return;
+                    }
+
+                    String dimName = parts[4];
+                    int x = Integer.parseInt(parts[5]);
+                    int z = Integer.parseInt(parts[6]);
+
+                    for (ServerLevel level : minecraftServer.getAllLevels()) {
+                        if (level.dimension().location().toString().equals(dimName)) {
+                            var data = MapScanner.getChunkData(level, x, z);
+                            StringBuilder json = new StringBuilder("{");
+                            json.append("\"x\":").append(data.get("x")).append(",");
+                            json.append("\"z\":").append(data.get("z")).append(",");
+                            json.append("\"heights\":[");
+                            int[] h = (int[]) data.get("heights");
+                            for(int i=0; i<h.length; i++) {
+                                json.append(h[i]).append(i < h.length-1 ? "," : "");
+                            }
+                            json.append("],\"blocks\":[");
+                            String[] b = (String[]) data.get("blocks");
+                            for(int i=0; i<b.length; i++) {
+                                json.append("\"").append(b[i]).append("\"").append(i < b.length-1 ? "," : "");
+                            }
+                            json.append("]}");
+                            sendResponse(exchange, json.toString(), "application/json");
                             return;
                         }
-                        byte[] bytes = is.readAllBytes();
-                        String contentType = "text/html";
-                        if (path.endsWith(".css")) contentType = "text/css";
-                        if (path.endsWith(".js")) contentType = "application/javascript";
-                        
-                        sendResponse(exchange, bytes, contentType);
                     }
-                });
-            }
+                    sendResponse(exchange, "{\"error\": \"Dimension not found\"}", "application/json", 404);
+                } catch (Exception e) {
+                    LOGGER.error("Error handling chunk request", e);
+                    sendResponse(exchange, "{\"error\": \"Internal server error\"}", "application/json", 500);
+                }
+            });
+
+            // Root context for static files
+            server.createContext("/", (exchange) -> {
+                String path = exchange.getRequestURI().getPath();
+                
+                // If it's an API call but didn't match specific contexts, it falls here
+                if (path.startsWith("/api/")) {
+                    sendResponse(exchange, "{\"error\": \"Not Found\"}", "application/json", 404);
+                    return;
+                }
+
+                if (!Config.enableInternalServer) {
+                    sendResponse(exchange, "Internal web server is disabled in config.", "text/plain", 403);
+                    return;
+                }
+
+                if (path.equals("/")) path = "/index.html";
+                
+                // IMPORTANT: Fixed resource path
+                String resourcePath = "/web" + path;
+                try (InputStream is = getClass().getResourceAsStream(resourcePath)) {
+                    if (is == null) {
+                        sendResponse(exchange, "File not found: " + path, "text/plain", 404);
+                        return;
+                    }
+                    byte[] bytes = is.readAllBytes();
+                    String contentType = "text/html";
+                    if (path.endsWith(".css")) contentType = "text/css";
+                    if (path.endsWith(".js")) contentType = "application/javascript";
+                    if (path.endsWith(".png")) contentType = "image/png";
+                    
+                    sendResponse(exchange, bytes, contentType, 200);
+                } catch (Exception e) {
+                    LOGGER.error("Error serving static file: " + path, e);
+                    sendResponse(exchange, "Error serving file", "text/plain", 500);
+                }
+            });
 
             server.setExecutor(Executors.newFixedThreadPool(2));
             server.start();
@@ -167,16 +185,16 @@ public class RealTimeMap {
 
     private void sendResponse(HttpExchange exchange, byte[] bytes, String contentType, int code) throws IOException {
         exchange.getResponseHeaders().add("Access-Control-Allow-Origin", "*");
-        exchange.getResponseHeaders().add("Access-Control-Allow-Methods", "GET, OPTIONS");
+        exchange.getResponseHeaders().add("Access-Control-Allow-Methods", "GET, OPTIONS, POST");
         exchange.getResponseHeaders().add("Access-Control-Allow-Headers", "Content-Type,Authorization");
         exchange.getResponseHeaders().add("Content-Type", contentType);
 
         if ("OPTIONS".equals(exchange.getRequestMethod())) {
-            exchange.sendResponseHeaders(24, -1);
+            exchange.sendResponseHeaders(204, -1);
             return;
         }
 
-        // Security Check
+        // Security Check for API
         if (exchange.getRequestURI().getPath().startsWith("/api/")) {
             String providedKey = exchange.getRequestHeaders().getFirst("Authorization");
             if (Config.apiKey != null && !Config.apiKey.isEmpty() && !"changeme".equals(Config.apiKey)) {
