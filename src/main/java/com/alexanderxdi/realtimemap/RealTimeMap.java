@@ -43,7 +43,6 @@ public class RealTimeMap {
 
     private void commonSetup(final FMLCommonSetupEvent event) {
         LOGGER.info("RealTimeMap Mod: Common Setup");
-        // Start web server ONLY IF it hasn't been started yet
         if (server == null) {
             startWebServer();
         }
@@ -56,15 +55,13 @@ public class RealTimeMap {
             
             server = HttpServer.create(new InetSocketAddress(port), 0);
             
-            // API Status
             server.createContext("/api/status", (exchange) -> {
-                sendResponse(exchange, "{\"status\": \"online\", \"version\": \"0.0.1\"}", "application/json");
+                sendResponse(exchange, "{\"status\": \"online\", \"version\": \"0.0.1\"}", "application/json", 200);
             });
 
-            // API Players
             server.createContext("/api/players", (exchange) -> {
                 StringBuilder json = new StringBuilder("[");
-                MinecraftServer ms = minecraftServer; // Thread-safe local copy
+                MinecraftServer ms = minecraftServer;
                 if (ms != null) {
                     List<ServerPlayer> players = ms.getPlayerList().getPlayers();
                     for (int i = 0; i < players.size(); i++) {
@@ -78,10 +75,9 @@ public class RealTimeMap {
                     }
                 }
                 json.append("]");
-                sendResponse(exchange, json.toString(), "application/json");
+                sendResponse(exchange, json.toString(), "application/json", 200);
             });
 
-            // Map Data API
             server.createContext("/api/map/chunk", (exchange) -> {
                 try {
                     MinecraftServer ms = minecraftServer;
@@ -118,18 +114,16 @@ public class RealTimeMap {
                                 json.append("\"").append(b[i]).append("\"").append(i < b.length-1 ? "," : "");
                             }
                             json.append("]}");
-                            sendResponse(exchange, json.toString(), "application/json");
+                            sendResponse(exchange, json.toString(), "application/json", 200);
                             return;
                         }
                     }
                     sendResponse(exchange, "{\"error\": \"Dimension not found\"}", "application/json", 404);
                 } catch (Exception e) {
-                    LOGGER.error("Error handling chunk request", e);
                     sendResponse(exchange, "{\"error\": \"Internal server error\"}", "application/json", 500);
                 }
             });
 
-            // Root context for static files
             server.createContext("/", (exchange) -> {
                 String path = exchange.getRequestURI().getPath();
                 if (path.startsWith("/api/")) {
@@ -166,8 +160,8 @@ public class RealTimeMap {
         }
     }
 
-    private void sendResponse(HttpExchange exchange, String response, String contentType) throws IOException {
-        sendResponse(exchange, response.getBytes(StandardCharsets.UTF_8), contentType, 200);
+    private void sendResponse(HttpExchange exchange, String response, String contentType, int code) throws IOException {
+        sendResponse(exchange, response.getBytes(StandardCharsets.UTF_8), contentType, code);
     }
 
     private void sendResponse(HttpExchange exchange, byte[] bytes, String contentType, int code) throws IOException {
@@ -200,13 +194,12 @@ public class RealTimeMap {
     }
 
     private void onServerStarted(ServerStartedEvent event) {
-        LOGGER.info("RealTimeMap Mod: World loaded, attaching data source.");
+        LOGGER.info("RealTimeMap Mod: World loaded.");
         minecraftServer = event.getServer();
     }
 
     private void onServerStopped(ServerStoppedEvent event) {
-        LOGGER.info("RealTimeMap Mod: World unloaded, data source detached.");
+        LOGGER.info("RealTimeMap Mod: World unloaded.");
         minecraftServer = null;
-        // DO NOT stop the web server here. It should stay alive for the site to work.
     }
 }
