@@ -40,7 +40,6 @@ public class RealTimeMap {
     }
 
     private void commonSetup(final FMLCommonSetupEvent event) {
-        LOGGER.info("RealTimeMap Mod: Common Setup");
         if (server == null) {
             startWebServer();
         }
@@ -49,8 +48,6 @@ public class RealTimeMap {
     private void startWebServer() {
         try {
             int port = Config.port > 0 ? Config.port : 8080;
-            LOGGER.info("RealTimeMap Mod: Starting Persistent Web Server on port {}", port);
-            
             server = HttpServer.create(new InetSocketAddress(port), 0);
             
             server.createContext("/api/status", (exchange) -> {
@@ -83,14 +80,12 @@ public class RealTimeMap {
                         sendResponse(exchange, "{\"error\": \"World not loaded\"}", "application/json", 503);
                         return;
                     }
-
                     String path = exchange.getRequestURI().getPath();
                     String[] parts = path.split("/");
                     if (parts.length < 6) {
-                        sendResponse(exchange, "{\"error\": \"Invalid path format\"}", "application/json", 400);
+                        sendResponse(exchange, "{\"error\": \"Invalid path\"}", "application/json", 400);
                         return;
                     }
-
                     String dimName = parts[4];
                     int x = Integer.parseInt(parts[5]);
                     int z = Integer.parseInt(parts[6]);
@@ -123,7 +118,6 @@ public class RealTimeMap {
                     }
                     sendResponse(exchange, "{\"error\": \"Dimension not found\"}", "application/json", 404);
                 } catch (Exception e) {
-                    LOGGER.error("Error handling chunk request", e);
                     sendResponse(exchange, "{\"error\": \"Internal server error\"}", "application/json", 500);
                 }
             });
@@ -135,37 +129,38 @@ public class RealTimeMap {
                     return;
                 }
                 if (!Config.enableInternalServer) {
-                    sendResponse(exchange, "Internal web server is disabled.", "text/plain", 403);
+                    sendResponse(exchange, "Disabled", "text/plain", 403);
                     return;
                 }
                 if (path.equals("/")) path = "/index.html";
-                
                 String resourcePath = "/web" + path;
                 try (InputStream is = getClass().getResourceAsStream(resourcePath)) {
                     if (is == null) {
-                        sendResponse(exchange, "File not found: " + path, "text/plain", 404);
+                        sendResponse(exchange, "404", "text/plain", 404);
                         return;
                     }
                     byte[] bytes = is.readAllBytes();
                     String contentType = "text/html; charset=UTF-8";
                     if (path.endsWith(".css")) contentType = "text/css; charset=UTF-8";
                     if (path.endsWith(".js")) contentType = "application/javascript; charset=UTF-8";
-                    if (path.endsWith(".png")) contentType = "image/png";
                     sendResponse(exchange, bytes, contentType, 200);
                 } catch (Exception e) {
-                    sendResponse(exchange, "Error serving file", "text/plain", 500);
+                    sendResponse(exchange, "Error", "text/plain", 500);
                 }
             });
 
             server.setExecutor(Executors.newFixedThreadPool(2));
             server.start();
+            LOGGER.info("RealTimeMap Web Server started on port {}", port);
         } catch (Exception e) {
-            LOGGER.error("RealTimeMap Mod: Failed to start Web Server: ", e);
+            LOGGER.error("Failed to start Web Server: ", e);
         }
     }
 
     private void sendResponse(HttpExchange exchange, String response, String contentType, int code) throws IOException {
-        sendResponse(exchange, response.getBytes(StandardCharsets.UTF_8), contentType, code);
+        // Force UTF-8 conversion for the response body
+        byte[] bytes = response.getBytes(StandardCharsets.UTF_8);
+        sendResponse(exchange, bytes, contentType, code);
     }
 
     private void sendResponse(HttpExchange exchange, byte[] bytes, String contentType, int code) throws IOException {
@@ -173,29 +168,14 @@ public class RealTimeMap {
         exchange.getResponseHeaders().add("Access-Control-Allow-Methods", "GET, OPTIONS, POST");
         exchange.getResponseHeaders().add("Access-Control-Allow-Headers", "Content-Type,Authorization");
         
-        // Ensure UTF-8 for JSON and Text
-        if (contentType.contains("application/json") || contentType.contains("text/")) {
-            if (!contentType.contains("charset=")) {
-                contentType += "; charset=UTF-8";
-            }
+        if (!contentType.contains("charset=")) {
+            contentType += "; charset=UTF-8";
         }
-        exchange.getResponseHeaders().add("Content-Type", contentType);
+        exchange.getResponseHeaders().set("Content-Type", contentType);
 
         if ("OPTIONS".equals(exchange.getRequestMethod())) {
             exchange.sendResponseHeaders(204, -1);
             return;
-        }
-
-        if (exchange.getRequestURI().getPath().startsWith("/api/")) {
-            String providedKey = exchange.getRequestHeaders().getFirst("Authorization");
-            if (Config.apiKey != null && !Config.apiKey.isEmpty() && !"changeme".equals(Config.apiKey)) {
-                if (providedKey == null || !providedKey.equals(Config.apiKey)) {
-                    byte[] error = "Unauthorized".getBytes(StandardCharsets.UTF_8);
-                    exchange.sendResponseHeaders(401, error.length);
-                    try (OutputStream os = exchange.getResponseBody()) { os.write(error); }
-                    return;
-                }
-            }
         }
 
         exchange.sendResponseHeaders(code, bytes.length);
@@ -205,12 +185,10 @@ public class RealTimeMap {
     }
 
     private void onServerStarted(ServerStartedEvent event) {
-        LOGGER.info("RealTimeMap Mod: World loaded.");
         minecraftServer = event.getServer();
     }
 
     private void onServerStopped(ServerStoppedEvent event) {
-        LOGGER.info("RealTimeMap Mod: World unloaded.");
         minecraftServer = null;
     }
 }
