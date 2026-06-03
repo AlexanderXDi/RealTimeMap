@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>RealTimeMap Status</title>
+    <style>
+        body { font-family: sans-serif; background: #222; color: #eee; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; }
+        .card { background: #333; padding: 2rem; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.3); text-align: center; }
+        h1 { color: #4CAF50; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h1>RealTimeMap</h1>
+        <p>Internal web server is working!</p>
+        <p>API Status: <code id="status">loading...</code></p>
+    </div>
+    <script>
+        fetch('/api/status').then(r => r.json()).then(data => {
+            document.getElementById('status').innerText = data.status + " v" + data.version;
+        });
+    </script>
+</body>
+</html>
