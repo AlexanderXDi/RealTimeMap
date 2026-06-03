@@ -46,12 +46,14 @@ public class RealTimeMap {
                 config.bundledPlugins.enableCors(cors -> {
                     cors.addRule(it -> it.anyHost());
                 });
-                // Hosting internal website from resources
-                config.staticFiles.add(staticFiles -> {
-                    staticFiles.hostedPath = "/";
-                    staticFiles.directory = "/web";
-                    staticFiles.location = Location.CLASSPATH;
-                });
+                // Hosting internal website from resources if enabled
+                if (Config.enableInternalServer) {
+                    config.staticFiles.add(staticFiles -> {
+                        staticFiles.hostedPath = "/";
+                        staticFiles.directory = "/web";
+                        staticFiles.location = Location.CLASSPATH;
+                    });
+                }
             });
 
             // Security Middleware
@@ -88,6 +90,26 @@ public class RealTimeMap {
                     }
                 }
                 ctx.json(players);
+            });
+
+            // Map Data API
+            server.get("/api/map/chunk/{dimension}/{x}/{z}", ctx -> {
+                if (minecraftServer == null) {
+                    ctx.status(503).result("Server not ready");
+                    return;
+                }
+
+                String dimName = ctx.pathParam("dimension");
+                int x = Integer.parseInt(ctx.pathParam("x"));
+                int z = Integer.parseInt(ctx.pathParam("z"));
+
+                for (ServerLevel level : minecraftServer.getAllLevels()) {
+                    if (level.dimension().location().toString().equals(dimName)) {
+                        ctx.json(MapScanner.getChunkData(level, x, z));
+                        return;
+                    }
+                }
+                ctx.status(404).result("Dimension not found");
             });
 
             int port = Config.port > 0 ? Config.port : 8080;

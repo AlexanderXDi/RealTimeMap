@@ -17,14 +17,20 @@ public class Config {
             .comment("API Key for accessing the map data (leave empty to disable security - NOT RECOMMENDED)")
             .define("api_key", "changeme");
 
+    private static final ModConfigSpec.BooleanValue ENABLE_INTERNAL_SERVER = BUILDER
+            .comment("Enable the internal web server to host the website")
+            .define("enable_internal_server", true);
+
     static final ModConfigSpec SPEC = BUILDER.build();
 
     public static int port;
     public static String apiKey;
+    public static boolean enableInternalServer;
 
     @SubscribeEvent
     static void onLoad(final ModConfigEvent event) {
         port = PORT.get();
         apiKey = API_KEY.get();
+        enableInternalServer = ENABLE_INTERNAL_SERVER.get();
     }
 }
