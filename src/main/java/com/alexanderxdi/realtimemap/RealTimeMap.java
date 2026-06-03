@@ -103,15 +103,20 @@ public class RealTimeMap {
                             StringBuilder json = new StringBuilder("{");
                             json.append("\"x\":").append(data.get("x")).append(",");
                             json.append("\"z\":").append(data.get("z")).append(",");
-                            json.append("\"heights\":[");
-                            int[] h = (int[]) data.get("heights");
-                            for(int i=0; i<h.length; i++) {
-                                json.append(h[i]).append(i < h.length-1 ? "," : "");
+                            json.append("\"topY\":[");
+                            int[] tY = (int[]) data.get("topY");
+                            for(int i=0; i<tY.length; i++) {
+                                json.append(tY[i]).append(i < tY.length-1 ? "," : "");
                             }
-                            json.append("],\"blocks\":[");
-                            String[] b = (String[]) data.get("blocks");
-                            for(int i=0; i<b.length; i++) {
-                                json.append("\"").append(b[i]).append("\"").append(i < b.length-1 ? "," : "");
+                            json.append("],\"columns\":[");
+                            List<List<String>> columns = (List<List<String>>) data.get("columns");
+                            for(int i=0; i<columns.size(); i++) {
+                                json.append("[");
+                                List<String> col = columns.get(i);
+                                for(int j=0; j<col.size(); j++) {
+                                    json.append("\"").append(col.get(j)).append("\"").append(j < col.size()-1 ? "," : "");
+                                }
+                                json.append("]").append(i < columns.size()-1 ? "," : "");
                             }
                             json.append("]}");
                             sendResponse(exchange, json.toString(), "application/json", 200);
@@ -120,6 +125,7 @@ public class RealTimeMap {
                     }
                     sendResponse(exchange, "{\"error\": \"Dimension not found\"}", "application/json", 404);
                 } catch (Exception e) {
+                    LOGGER.error("Error handling chunk request", e);
                     sendResponse(exchange, "{\"error\": \"Internal server error\"}", "application/json", 500);
                 }
             });
@@ -171,7 +177,7 @@ public class RealTimeMap {
         exchange.getResponseHeaders().add("Content-Type", contentType);
 
         if ("OPTIONS".equals(exchange.getRequestMethod())) {
-            exchange.sendResponseHeaders(204, -1);
+            exchange.sendResponseHeaders(24, -1);
             return;
         }
 
