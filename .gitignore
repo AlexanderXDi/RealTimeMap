@@ -12,6 +12,12 @@ build/
 .classpath
 .project
 
+# Minecraft Run Directories
+run/
+run_server/
+run_client/
+run_data/
+
 # OS
 Thumbs.db
 .DS_Store
@@ -24,6 +30,5 @@ Thumbs.db
 
 # Logs
 *.log
+logs/
 
-# Git
-.git/
