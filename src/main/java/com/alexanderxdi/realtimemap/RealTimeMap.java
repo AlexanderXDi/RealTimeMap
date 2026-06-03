@@ -1,7 +1,6 @@
 package com.alexanderxdi.realtimemap;
 
 import com.sun.net.httpserver.HttpExchange;
-import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpServer;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
@@ -29,8 +28,8 @@ import java.util.concurrent.Executors;
 public class RealTimeMap {
     public static final String MODID = "realtimemap";
     public static final Logger LOGGER = LogManager.getLogger();
-    private HttpServer server;
-    private MinecraftServer minecraftServer;
+    private static HttpServer server;
+    private static MinecraftServer minecraftServer;
 
     public RealTimeMap(IEventBus modEventBus, ModContainer modContainer) {
         LOGGER.info("RealTimeMap Mod: Initializing...");
@@ -43,14 +42,17 @@ public class RealTimeMap {
     }
 
     private void commonSetup(final FMLCommonSetupEvent event) {
-        LOGGER.info("RealTimeMap Mod: Common Setup - Starting Web Server");
-        startWebServer();
+        LOGGER.info("RealTimeMap Mod: Common Setup");
+        // Start web server ONLY IF it hasn't been started yet
+        if (server == null) {
+            startWebServer();
+        }
     }
 
     private void startWebServer() {
         try {
             int port = Config.port > 0 ? Config.port : 8080;
-            LOGGER.info("RealTimeMap Mod: Attempting to start server on port {}", port);
+            LOGGER.info("RealTimeMap Mod: Starting Persistent Web Server on port {}", port);
             
             server = HttpServer.create(new InetSocketAddress(port), 0);
             
@@ -62,8 +64,9 @@ public class RealTimeMap {
             // API Players
             server.createContext("/api/players", (exchange) -> {
                 StringBuilder json = new StringBuilder("[");
-                if (minecraftServer != null) {
-                    List<ServerPlayer> players = minecraftServer.getPlayerList().getPlayers();
+                MinecraftServer ms = minecraftServer; // Thread-safe local copy
+                if (ms != null) {
+                    List<ServerPlayer> players = ms.getPlayerList().getPlayers();
                     for (int i = 0; i < players.size(); i++) {
                         ServerPlayer p = players.get(i);
                         json.append(String.format(
@@ -81,8 +84,9 @@ public class RealTimeMap {
             // Map Data API
             server.createContext("/api/map/chunk", (exchange) -> {
                 try {
-                    if (minecraftServer == null) {
-                        sendResponse(exchange, "{\"error\": \"Server not ready\"}", "application/json", 503);
+                    MinecraftServer ms = minecraftServer;
+                    if (ms == null) {
+                        sendResponse(exchange, "{\"error\": \"World not loaded\"}", "application/json", 503);
                         return;
                     }
 
@@ -97,7 +101,7 @@ public class RealTimeMap {
                     int x = Integer.parseInt(parts[5]);
                     int z = Integer.parseInt(parts[6]);
 
-                    for (ServerLevel level : minecraftServer.getAllLevels()) {
+                    for (ServerLevel level : ms.getAllLevels()) {
                         if (level.dimension().location().toString().equals(dimName)) {
                             var data = MapScanner.getChunkData(level, x, z);
                             StringBuilder json = new StringBuilder("{");
@@ -128,21 +132,16 @@ public class RealTimeMap {
             // Root context for static files
             server.createContext("/", (exchange) -> {
                 String path = exchange.getRequestURI().getPath();
-                
-                // If it's an API call but didn't match specific contexts, it falls here
                 if (path.startsWith("/api/")) {
                     sendResponse(exchange, "{\"error\": \"Not Found\"}", "application/json", 404);
                     return;
                 }
-
                 if (!Config.enableInternalServer) {
-                    sendResponse(exchange, "Internal web server is disabled in config.", "text/plain", 403);
+                    sendResponse(exchange, "Internal web server is disabled.", "text/plain", 403);
                     return;
                 }
-
                 if (path.equals("/")) path = "/index.html";
                 
-                // IMPORTANT: Fixed resource path
                 String resourcePath = "/web" + path;
                 try (InputStream is = getClass().getResourceAsStream(resourcePath)) {
                     if (is == null) {
@@ -154,18 +153,14 @@ public class RealTimeMap {
                     if (path.endsWith(".css")) contentType = "text/css";
                     if (path.endsWith(".js")) contentType = "application/javascript";
                     if (path.endsWith(".png")) contentType = "image/png";
-                    
                     sendResponse(exchange, bytes, contentType, 200);
                 } catch (Exception e) {
-                    LOGGER.error("Error serving static file: " + path, e);
                     sendResponse(exchange, "Error serving file", "text/plain", 500);
                 }
             });
 
             server.setExecutor(Executors.newFixedThreadPool(2));
             server.start();
-
-            LOGGER.info("RealTimeMap Mod: Web Server started successfully on port {}", port);
         } catch (Exception e) {
             LOGGER.error("RealTimeMap Mod: Failed to start Web Server: ", e);
         }
@@ -173,14 +168,6 @@ public class RealTimeMap {
 
     private void sendResponse(HttpExchange exchange, String response, String contentType) throws IOException {
         sendResponse(exchange, response.getBytes(StandardCharsets.UTF_8), contentType, 200);
-    }
-
-    private void sendResponse(HttpExchange exchange, byte[] bytes, String contentType) throws IOException {
-        sendResponse(exchange, bytes, contentType, 200);
-    }
-
-    private void sendResponse(HttpExchange exchange, String response, String contentType, int code) throws IOException {
-        sendResponse(exchange, response.getBytes(StandardCharsets.UTF_8), contentType, code);
     }
 
     private void sendResponse(HttpExchange exchange, byte[] bytes, String contentType, int code) throws IOException {
@@ -194,12 +181,11 @@ public class RealTimeMap {
             return;
         }
 
-        // Security Check for API
         if (exchange.getRequestURI().getPath().startsWith("/api/")) {
             String providedKey = exchange.getRequestHeaders().getFirst("Authorization");
             if (Config.apiKey != null && !Config.apiKey.isEmpty() && !"changeme".equals(Config.apiKey)) {
                 if (providedKey == null || !providedKey.equals(Config.apiKey)) {
-                    byte[] error = "Unauthorized: Invalid API Key".getBytes();
+                    byte[] error = "Unauthorized".getBytes();
                     exchange.sendResponseHeaders(401, error.length);
                     try (OutputStream os = exchange.getResponseBody()) { os.write(error); }
                     return;
@@ -214,14 +200,13 @@ public class RealTimeMap {
     }
 
     private void onServerStarted(ServerStartedEvent event) {
-        LOGGER.info("RealTimeMap Mod: Server instance captured.");
-        this.minecraftServer = event.getServer();
+        LOGGER.info("RealTimeMap Mod: World loaded, attaching data source.");
+        minecraftServer = event.getServer();
     }
 
     private void onServerStopped(ServerStoppedEvent event) {
-        this.minecraftServer = null;
-        if (server != null) {
-            server.stop(0);
-        }
+        LOGGER.info("RealTimeMap Mod: World unloaded, data source detached.");
+        minecraftServer = null;
+        // DO NOT stop the web server here. It should stay alive for the site to work.
     }
 }
