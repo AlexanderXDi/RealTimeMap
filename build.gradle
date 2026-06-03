@@ -4,6 +4,7 @@ plugins {
     id 'idea'
     id 'maven-publish'
     id 'net.neoforged.moddev' version '2.0.71'
+    id 'com.github.johnrengelman.shadow' version '8.1.1'
 }
 
 version = mod_version
@@ -52,10 +53,36 @@ sourceSets.main.resources { srcDir 'src/generated/resources' }
 
 repositories {
     mavenLocal()
+    mavenCentral()
+}
+
+configurations {
+    shadowed
+    implementation.extendsFrom shadowed
 }
 
 dependencies {
+    shadowed 'io.javalin:javalin:6.1.3'
+    shadowed 'com.fasterxml.jackson.core:jackson-databind:2.17.0'
+    shadowed 'org.slf4j:slf4j-simple:2.0.9'
+    shadowed 'org.slf4j:slf4j-api:2.0.9'
 }
+
+configurations.all {
+    resolutionStrategy.force 'org.slf4j:slf4j-api:2.0.9'
+}
+
+shadowJar {
+    configurations = [project.configurations.shadowed]
+    archiveClassifier.set('')
+    zip64 true
+}
+
+tasks.named('jar', Jar) {
+    enabled = false
+}
+
+assemble.dependsOn(shadowJar)
 
 tasks.withType(ProcessResources).configureEach {
     var replaceProperties = [
