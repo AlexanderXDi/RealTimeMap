@@ -157,6 +157,10 @@ public class RealTimeMap {
         sendResponse(exchange, response.getBytes(StandardCharsets.UTF_8), contentType, 200);
     }
 
+    private void sendResponse(HttpExchange exchange, byte[] bytes, String contentType) throws IOException {
+        sendResponse(exchange, bytes, contentType, 200);
+    }
+
     private void sendResponse(HttpExchange exchange, String response, String contentType, int code) throws IOException {
         sendResponse(exchange, response.getBytes(StandardCharsets.UTF_8), contentType, code);
     }
