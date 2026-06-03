@@ -1,0 +1,30 @@
+package com.alexanderxdi.realtimemap;
+
+import net.neoforged.bus.api.SubscribeEvent;
+import net.neoforged.fml.common.EventBusSubscriber;
+import net.neoforged.fml.event.config.ModConfigEvent;
+import net.neoforged.neoforge.common.ModConfigSpec;
+
+@EventBusSubscriber(modid = RealTimeMap.MODID, bus = EventBusSubscriber.Bus.MOD)
+public class Config {
+    private static final ModConfigSpec.Builder BUILDER = new ModConfigSpec.Builder();
+
+    private static final ModConfigSpec.IntValue PORT = BUILDER
+            .comment("Port for the RealTimeMap web server")
+            .defineInRange("port", 8080, 1024, 65535);
+
+    private static final ModConfigSpec.ConfigValue<String> API_KEY = BUILDER
+            .comment("API Key for accessing the map data (leave empty to disable security - NOT RECOMMENDED)")
+            .define("api_key", "changeme");
+
+    static final ModConfigSpec SPEC = BUILDER.build();
+
+    public static int port;
+    public static String apiKey;
+
+    @SubscribeEvent
+    static void onLoad(final ModConfigEvent event) {
+        port = PORT.get();
+        apiKey = API_KEY.get();
+    }
+}
