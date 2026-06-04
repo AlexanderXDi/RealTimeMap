@@ -15,7 +15,7 @@ public class Config {
 
     private static final ModConfigSpec.ConfigValue<String> API_KEY = BUILDER
             .comment("API Key for accessing the map data (leave empty to disable security - NOT RECOMMENDED)")
-            .define("api_key", "changeme");
+            .define("api_key", "");
 
     private static final ModConfigSpec.BooleanValue ENABLE_INTERNAL_SERVER = BUILDER
             .comment("Enable the internal web server to host the website")

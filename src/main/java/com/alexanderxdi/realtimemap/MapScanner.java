@@ -12,14 +12,38 @@ import java.util.List;
 import java.util.Map;
 
 public class MapScanner {
+    private static final Map<String, Integer> blockToId = new HashMap<>();
+    private static final List<String> idToBlock = new ArrayList<>();
 
-    public static Map<String, Object> getChunkData(ServerLevel level, int chunkX, int chunkZ) {
+    static {
+        getOrAddBlockId("air");
+        getOrAddBlockId("minecraft:air");
+    }
+
+    private static int getOrAddBlockId(String blockId) {
+        synchronized (blockToId) {
+            if (!blockToId.containsKey(blockId)) {
+                int id = idToBlock.size();
+                blockToId.put(blockId, id);
+                idToBlock.add(blockId);
+                return id;
+            }
+            return blockToId.get(blockId);
+        }
+    }
+
+    public static List<String> getDictionary() {
+        synchronized (blockToId) {
+            return new ArrayList<>(idToBlock);
+        }
+    }
+
+    public static Map<String, Object> getChunkData(ServerLevel level, int chunkX, int chunkZ, String mode) {
         Map<String, Object> data = new HashMap<>();
+        boolean is3d = "3d".equalsIgnoreCase(mode);
         
-        // Будем хранить данные как список "столбцов"
-        // Каждый столбец - это массив ID блоков от самого верхнего до определенной глубины
-        List<List<String>> columns = new ArrayList<>(256);
         int[] topY = new int[256];
+        List<List<Integer>> columns = new ArrayList<>(256);
 
         BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
         
@@ -31,17 +55,21 @@ public class MapScanner {
                 int surfaceY = level.getHeight(Heightmap.Types.WORLD_SURFACE, worldX, worldZ);
                 topY[z * 16 + x] = surfaceY;
                 
-                List<String> columnBlocks = new ArrayList<>();
-                // Сканируем 10 блоков вниз от поверхности (для детальности)
-                // В будущем это можно расширить для полноценных пещер
-                for (int y = surfaceY; y > surfaceY - 15 && y > level.getMinBuildHeight(); y--) {
-                    pos.set(worldX, y - 1, worldZ);
-                    BlockState state = level.getBlockState(pos);
-                    if (state.isAir()) {
-                        columnBlocks.add("air");
-                    } else {
-                        columnBlocks.add(BuiltInRegistries.BLOCK.getKey(state.getBlock()).toString());
+                List<Integer> columnBlocks = new ArrayList<>();
+                if (is3d) {
+                    // Скан от поверхности до самого низа мира
+                    for (int y = surfaceY; y >= level.getMinBuildHeight(); y--) {
+                        pos.set(worldX, y - 1, worldZ);
+                        BlockState state = level.getBlockState(pos);
+                        String blockName = state.isAir() ? "air" : BuiltInRegistries.BLOCK.getKey(state.getBlock()).toString();
+                        columnBlocks.add(getOrAddBlockId(blockName));
                     }
+                } else {
+                    // Режим 2D - только верхний блок
+                    pos.set(worldX, surfaceY - 1, worldZ);
+                    BlockState state = level.getBlockState(pos);
+                    String blockName = state.isAir() ? "air" : BuiltInRegistries.BLOCK.getKey(state.getBlock()).toString();
+                    columnBlocks.add(getOrAddBlockId(blockName));
                 }
                 columns.add(columnBlocks);
             }

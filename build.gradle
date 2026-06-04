@@ -27,12 +27,14 @@ neoForge {
         client {
             client()
             systemProperty 'neoforge.enabledGameTestNamespaces', mod_id
+            systemProperty 'file.encoding', 'UTF-8'
         }
 
         server {
             server()
             programArgument '--nogui'
             systemProperty 'neoforge.enabledGameTestNamespaces', mod_id
+            systemProperty 'file.encoding', 'UTF-8'
         }
 
         data {
