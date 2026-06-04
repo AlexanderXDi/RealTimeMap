@@ -9,9 +9,9 @@ function App() {
   const [isWorldLoaded, setIsWorldLoaded] = useState(false)
   const [chunkData, setChunkData] = useState(null)
   const [dictionary, setDictionary] = useState([])
-  const [viewMode, setViewMode] = useState("3d")  
-  const [minY, setMinY] = useState(-64)
-  const [maxY, setMaxHeight] = useState(320)
+  const [viewMode, setViewMode] = useState("2d")  
+  const [minY, setMinY] = useState(parseInt(localStorage.getItem('rtm_min_y')) || -64)
+  const [maxY, setMaxHeight] = useState(parseInt(localStorage.getItem('rtm_max_y')) || 320)
   const [apiKey, setApiKey] = useState(localStorage.getItem('rtm_api_key') || '')
   
   const [panels, setPanels] = useState({ settings: true, inspector: false })
@@ -28,6 +28,18 @@ function App() {
   const updateApiKey = (val) => {
     setApiKey(val);
     localStorage.setItem('rtm_api_key', val);
+  }
+
+  const updateMinY = (val) => {
+    const v = parseInt(val);
+    setMinY(v);
+    localStorage.setItem('rtm_min_y', v);
+  }
+
+  const updateMaxY = (val) => {
+    const v = parseInt(val);
+    setMaxHeight(v);
+    localStorage.setItem('rtm_max_y', v);
   }
 
   const fetchAPI = async (url, timeout = 5000) => {
@@ -56,14 +68,13 @@ function App() {
       setIsWorldLoaded(worldIsReady)
       
       if (worldIsReady) {
-        // Загружаем словарь только один раз за сессию
         if (dictionary.length === 0) {
           console.log("[RTM] Fetching dictionary...");
           const dict = await fetchAPI("/api/map/dictionary", 3000);
           setDictionary(dict);
         }
 
-        const pData = await fetchAPI("/api/players", 3000)
+        const pData = await fetchAPI("/api/players", 2000)
         setPlayers(pData)
 
         const now = Date.now();
@@ -120,16 +131,16 @@ function App() {
 
   useEffect(() => {
     updateData();
-    const i = setInterval(updateData, 3000)
+    const i = setInterval(updateData, 2000)
     return () => clearInterval(i)
-  }, [apiKey, viewMode, dictionary.length]) // Добавили dictionary.length для корректного перехода к игрокам
+  }, [apiKey, viewMode, dictionary.length])
 
   return (
     <>
       <div className="sidebar-area">
         <aside className="sidebar">
           <div className="brand">
-            <h1>RealTimeMap v2</h1>
+            <h1 style={{ fontWeight: "normal" }}>RealTimeMap</h1>
             <div style={{fontSize: "0.6rem", textAlign: "center", marginBottom: "10px", display: "flex", justifyContent: "center", gap: "10px"}}>
               <span style={{color: isOnline ? "#4caf50" : "#f44336"}}>● {isOnline ? "ONLINE" : "OFFLINE"}</span>
               <span style={{color: isWorldLoaded ? "#4caf50" : "#ff9800"}}>● {isWorldLoaded ? "WORLD" : "MENU"}</span>
@@ -138,33 +149,33 @@ function App() {
           </div>
 
           <div className="panel">
-            <div className="panel-header" onClick={() => togglePanel('settings')}>
-              <span>⚙️ SETTINGS</span>
+            <div className="panel-header" onClick={() => togglePanel('settings')} style={{ fontWeight: "normal" }}>
+              <span>⚙️ Settings</span>
               <span>{panels.settings ? '▼' : '▶'}</span>
             </div>
             {panels.settings && (
               <div className="panel-content">
                 <div className="menu-section">
-                  <label>Security Key</label>
+                  <label style={{ fontWeight: "normal" }}>Security Key</label>
                   <input type="password" placeholder="API Key..." className="coord-input" value={apiKey} onChange={e => updateApiKey(e.target.value)} />
                 </div>
                 <div className="menu-section">
-                  <label>Mode</label>
+                  <label style={{ fontWeight: "normal" }}>Mode</label>
                   <div className="nav-list">
                     <button onClick={() => { chunkCache.current.clear(); setViewMode("2d"); }} className={viewMode === "2d" ? "nav-btn active" : "nav-btn"}>2D Flat</button>
                     <button onClick={() => { chunkCache.current.clear(); setViewMode("3d"); }} className={viewMode === "3d" ? "nav-btn active" : "nav-btn"}>3D Isometric</button>
                   </div>
                 </div>
                 <div className="menu-section">
-                  <label>Height Filter (Y)</label>
+                  <label style={{ fontWeight: "normal" }}>Height Filter (Y)</label>
                   <div className="range-controls">
                     <div className="range-item">
                       <span>Min: {minY}</span>
-                      <input type="range" min="-64" max="320" value={minY} onChange={e => setMinY(Math.min(parseInt(e.target.value), maxY))} />
+                      <input type="range" min="-64" max="320" value={minY} onChange={e => updateMinY(e.target.value)} />
                     </div>
                     <div className="range-item">
                       <span>Max: {maxY}</span>
-                      <input type="range" min="-64" max="320" value={maxY} onChange={e => setMaxHeight(Math.max(parseInt(e.target.value), minY))} />
+                      <input type="range" min="-64" max="320" value={maxY} onChange={e => updateMaxY(e.target.value)} />
                     </div>
                   </div>
                 </div>
@@ -177,14 +188,14 @@ function App() {
           </div>
 
           <div className="panel">
-            <div className="panel-header" onClick={() => togglePanel('inspector')}>
-              <span>🔍 BLOCK INSPECTOR</span>
+            <div className="panel-header" onClick={() => togglePanel('inspector')} style={{ fontWeight: "normal" }}>
+              <span>🔍 Block Inspector</span>
               <span>{panels.inspector ? '▼' : '▶'}</span>
             </div>
             {panels.inspector && (
               <div className="panel-content">
                 <div className="menu-section">
-                   <label>Coordinates</label>
+                   <label style={{ fontWeight: "normal" }}>Coordinates</label>
                    <div className="coord-inputs">
                      <input type="number" className="coord-input" placeholder="X" value={inspectPos.x} onChange={e => setInspectPos({...inspectPos, x: parseInt(e.target.value)||0})} />
                      <input type="number" className="coord-input" placeholder="Y" value={inspectPos.y} onChange={e => setInspectPos({...inspectPos, y: parseInt(e.target.value)||0})} />
@@ -203,7 +214,7 @@ function App() {
           </div>
 
           <div className="menu-section" style={{marginTop: "10px"}}>
-            <label>Players ({players.length})</label>
+            <label style={{ fontWeight: "normal" }}>Players ({players.length})</label>
             <div className="player-list">
               {players.map(p => (
                 <div key={p.uuid} className="player-card">
