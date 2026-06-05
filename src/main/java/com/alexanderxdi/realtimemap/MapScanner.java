@@ -20,12 +20,25 @@ public class MapScanner {
         getOrAddBlockId("minecraft:air");
     }
 
+    public static void loadDictionaryFromDb() {
+        synchronized (blockToId) {
+            MapDatabase.loadDictionary((id, key) -> {
+                if (!blockToId.containsKey(key)) {
+                    blockToId.put(key, id);
+                    while (idToBlock.size() <= id) idToBlock.add(null);
+                    idToBlock.set(id, key);
+                }
+            });
+        }
+    }
+
     private static int getOrAddBlockId(String blockId) {
         synchronized (blockToId) {
             if (!blockToId.containsKey(blockId)) {
                 int id = idToBlock.size();
                 blockToId.put(blockId, id);
                 idToBlock.add(blockId);
+                MapDatabase.saveDictionary(id, blockId);
                 return id;
             }
             return blockToId.get(blockId);

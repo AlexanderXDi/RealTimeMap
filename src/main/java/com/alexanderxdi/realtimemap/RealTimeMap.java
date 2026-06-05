@@ -122,18 +122,28 @@ public class RealTimeMap {
                     int z = Integer.parseInt(params.getOrDefault("z", "0"));
                     String mode = params.getOrDefault("mode", "2d");
 
-                    MinecraftServer ms = minecraftServer;
-                    if (ms == null) {
-                        sendResponse(exchange, "{\"error\": \"World not loaded\"}", "application/json", 503);
-                        return;
-                    }
-
                     CompletableFuture<String> future = new CompletableFuture<>();
                     CompletableFuture.runAsync(() -> {
                         try {
+                            // 1. Пытаемся найти в БД
+                            String cached = MapDatabase.getChunk(dimName, x, z);
+                            if (cached != null) {
+                                future.complete(cached);
+                                return;
+                            }
+
+                            // 2. Если нет в БД, сканируем мир (нужен активный сервер)
+                            MinecraftServer ms = minecraftServer;
+                            if (ms == null) {
+                                future.completeExceptionally(new Exception("World not loaded and chunk not in DB"));
+                                return;
+                            }
+
                             for (ServerLevel level : ms.getAllLevels()) {
                                 if (level.dimension().location().toString().equals(dimName)) {
                                     var data = MapScanner.getChunkData(level, x, z, mode);
+                                    
+                                    // Формируем JSON
                                     StringBuilder json = new StringBuilder("{");
                                     json.append("\"x\":").append(data.get("x")).append(",");
                                     json.append("\"z\":").append(data.get("z")).append(",");
@@ -150,13 +160,18 @@ public class RealTimeMap {
                                         json.append("]").append(++gIdx < groups.size() ? "," : "");
                                     }
                                     json.append("}}");
-                                    future.complete(json.toString());
+                                    
+                                    String result = json.toString();
+                                    // Сохраняем в БД для будущего использования
+                                    MapDatabase.saveChunk(dimName, x, z, result);
+                                    
+                                    future.complete(result);
                                     return;
                                 }
                             }
                             future.completeExceptionally(new Exception("Dimension not found"));
                         } catch (Throwable t) {
-                            LOGGER.error("[RTM-API] Async Scan Error: {}", t.getMessage());
+                            LOGGER.error("[RTM-API] Async Scan/DB Error: {}", t.getMessage());
                             future.completeExceptionally(t);
                         }
                     }, SCAN_EXECUTOR);
@@ -165,7 +180,7 @@ public class RealTimeMap {
                         String json = future.get(30, TimeUnit.SECONDS);
                         sendResponse(exchange, json, "application/json", 200);
                     } catch (Exception e) {
-                        sendResponse(exchange, "{\"error\": \"Failed to get chunk data\"}", "application/json", 503);
+                        sendResponse(exchange, "{\"error\": \"" + e.getMessage() + "\"}", "application/json", 503);
                     }
                 } catch (Exception e) {
                     sendResponse(exchange, "{\"error\": \"Bad request: " + e.getMessage() + "\"}", "application/json", 400);
@@ -313,11 +328,15 @@ public class RealTimeMap {
 
     private void onServerStarted(ServerStartedEvent event) {
         minecraftServer = event.getServer();
-        LOGGER.info("RealTimeMap: Minecraft Server started, API ready.");
+        String worldName = minecraftServer.getWorldData().getLevelName();
+        MapDatabase.init(worldName);
+        MapScanner.loadDictionaryFromDb();
+        LOGGER.info("RealTimeMap: Minecraft Server started, API and DB ready.");
     }
 
     private void onServerStopped(ServerStoppedEvent event) {
         minecraftServer = null;
+        MapDatabase.close();
         LOGGER.info("RealTimeMap: Minecraft Server stopped, API suspended.");
     }
 }
