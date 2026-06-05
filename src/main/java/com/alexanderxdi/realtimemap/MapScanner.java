@@ -16,33 +16,44 @@ public class MapScanner {
     private static final List<String> idToBlock = new ArrayList<>();
 
     static {
-        getOrAddBlockId("air");
-        getOrAddBlockId("minecraft:air");
+        getOrAddBlockId("air", "#000000");
+        getOrAddBlockId("minecraft:air", "#000000");
     }
 
     public static void loadDictionaryFromDb() {
         synchronized (blockToId) {
-            MapDatabase.loadDictionary((id, key) -> {
-                if (!blockToId.containsKey(key)) {
-                    blockToId.put(key, id);
-                    while (idToBlock.size() <= id) idToBlock.add(null);
-                    idToBlock.set(id, key);
+            MapDatabase.loadDictionary(entry -> {
+                if (!blockToId.containsKey(entry.key())) {
+                    blockToId.put(entry.key(), entry.id());
+                    while (idToBlock.size() <= entry.id()) idToBlock.add(null);
+                    idToBlock.set(entry.id(), entry.key());
+                    if (entry.hexColor() != null) {
+                        TextureAtlasGenerator.registerBlockColor(entry.id(), entry.hexColor());
+                    }
                 }
             });
         }
     }
 
-    private static int getOrAddBlockId(String blockId) {
+    private static int getOrAddBlockId(String blockId, String hexColor) {
         synchronized (blockToId) {
             if (!blockToId.containsKey(blockId)) {
                 int id = idToBlock.size();
                 blockToId.put(blockId, id);
                 idToBlock.add(blockId);
-                MapDatabase.saveDictionary(id, blockId);
+                MapDatabase.saveDictionary(id, blockId, hexColor);
+                TextureAtlasGenerator.registerBlockColor(id, hexColor);
                 return id;
             }
-            return blockToId.get(blockId);
+            int id = blockToId.get(blockId);
+            TextureAtlasGenerator.registerBlockColor(id, hexColor);
+            return id;
         }
+    }
+
+    public static String getHexColor(ServerLevel level, net.minecraft.core.BlockPos pos, BlockState state) {
+        int color = state.getMapColor(level, pos).col;
+        return String.format("#%06X", (color & 0xFFFFFF));
     }
 
     public static List<String> getDictionary() {
@@ -54,7 +65,7 @@ public class MapScanner {
     public static Map<String, Object> getChunkData(ServerLevel level, int chunkX, int chunkZ, String mode) {
         Map<String, Object> data = new HashMap<>();
         boolean is3d = "3d".equalsIgnoreCase(mode);
-        Map<Integer, List<Integer>> groups = new HashMap<>();
+        List<Integer> blocks = new ArrayList<>();
 
         int minHeight = level.getMinBuildHeight();
         BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
@@ -87,13 +98,14 @@ public class MapScanner {
 
                     if (faces > 0 || !is3d) {
                         String blockName = BuiltInRegistries.BLOCK.getKey(state.getBlock()).toString();
-                        int id = getOrAddBlockId(blockName);
+                        String color = getHexColor(level, pos, state);
+                        int id = getOrAddBlockId(blockName, color);
                         
-                        List<Integer> list = groups.computeIfAbsent(id, k -> new ArrayList<>());
-                        list.add(x);
-                        list.add(y - 1);
-                        list.add(z);
-                        list.add(faces);
+                        blocks.add(x);
+                        blocks.add(y - 1);
+                        blocks.add(z);
+                        blocks.add(id);
+                        blocks.add(faces);
                         totalFound++;
                         
                         if (!is3d) break; 
@@ -108,7 +120,7 @@ public class MapScanner {
         
         data.put("x", chunkX);
         data.put("z", chunkZ);
-        data.put("groups", groups);
+        data.put("blocks", blocks);
         
         return data;
     }

@@ -23,18 +23,19 @@ public class MapDatabase {
             available = true;
 
             try (Statement stmt = connection.createStatement()) {
-                // Включаем WAL для конкурентного доступа и ускорения
                 stmt.execute("PRAGMA journal_mode=WAL;");
                 stmt.execute("PRAGMA synchronous=NORMAL;");
 
-                // Таблица для чанков с составным индексом
                 stmt.execute("CREATE TABLE IF NOT EXISTS chunks (" +
                         "dim TEXT, x INTEGER, z INTEGER, data BLOB, updated_at INTEGER, " +
                         "PRIMARY KEY (dim, x, z))");
 
-                // Таблица для словаря блоков
                 stmt.execute("CREATE TABLE IF NOT EXISTS dictionary (" +
-                        "id INTEGER PRIMARY KEY, block_key TEXT UNIQUE)");
+                        "id INTEGER PRIMARY KEY, block_key TEXT UNIQUE, hex_color TEXT)");
+
+                try {
+                    stmt.execute("ALTER TABLE dictionary ADD COLUMN hex_color TEXT");
+                } catch (SQLException ignored) {}
             }
             RealTimeMap.LOGGER.info("RealTimeMap: Database initialized: {}.db", dbName);
         } catch (Exception e) {
@@ -75,29 +76,32 @@ public class MapDatabase {
         return null;
     }
 
-    public static synchronized void saveDictionary(int id, String key) {
+    public static synchronized void saveDictionary(int id, String key, String hexColor) {
         if (!available) return;
-        String sql = "INSERT OR IGNORE INTO dictionary (id, block_key) VALUES (?, ?)";
+        String sql = "INSERT OR REPLACE INTO dictionary (id, block_key, hex_color) VALUES (?, ?, ?)";
         try (PreparedStatement pstmt = connection.prepareStatement(sql)) {
             pstmt.setInt(1, id);
             pstmt.setString(2, key);
+            pstmt.setString(3, hexColor);
             pstmt.executeUpdate();
         } catch (SQLException e) {
             RealTimeMap.LOGGER.error("RealTimeMap: DB dict save error: " + e.getMessage());
         }
     }
 
-    public static synchronized void loadDictionary(java.util.function.BiConsumer<Integer, String> consumer) {
+    public static synchronized void loadDictionary(java.util.function.Consumer<DictEntry> consumer) {
         if (!available) return;
         try (Statement stmt = connection.createStatement()) {
-            ResultSet rs = stmt.executeQuery("SELECT id, block_key FROM dictionary");
+            ResultSet rs = stmt.executeQuery("SELECT id, block_key, hex_color FROM dictionary");
             while (rs.next()) {
-                consumer.accept(rs.getInt("id"), rs.getString("block_key"));
+                consumer.accept(new DictEntry(rs.getInt("id"), rs.getString("block_key"), rs.getString("hex_color")));
             }
         } catch (SQLException e) {
             RealTimeMap.LOGGER.error("RealTimeMap: DB dict load error: " + e.getMessage());
         }
     }
+
+    public record DictEntry(int id, String key, String hexColor) {}
 
     private static byte[] compress(String str) {
         if (str == null || str.length() == 0) return null;

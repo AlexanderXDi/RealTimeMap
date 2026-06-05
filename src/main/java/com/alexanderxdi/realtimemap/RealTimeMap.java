@@ -60,18 +60,32 @@ public class RealTimeMap {
             server.createContext("/api/status", (exchange) -> {
                 LOGGER.info("API Status Request");
                 boolean worldReady = (minecraftServer != null);
-                sendResponse(exchange, "{\"status\": \"online\", \"version\": \"0.0.1\", \"world_loaded\": " + worldReady + "}", "application/json", 200);
+                String response = String.format(Locale.US, "{\"status\": \"online\", \"version\": \"0.1.0\", \"world_loaded\": %b, \"atlas_v\": %d, \"max_render_distance\": %d}", 
+                    worldReady, TextureAtlasGenerator.getAtlasVersion(), Config.maxRenderRadius);
+                sendResponse(exchange, response, "application/json", 200);
+            });
+
+            server.createContext("/api/map/atlas.png", (exchange) -> {
+                if (!checkApiKey(exchange)) return;
+                byte[] bytes = TextureAtlasGenerator.getAtlasBytes();
+                sendResponse(exchange, bytes, "image/png", 200);
             });
 
             server.createContext("/api/map/dictionary", (exchange) -> {
                 LOGGER.info("API Dictionary Request");
                 if (!checkApiKey(exchange)) return;
                 List<String> dict = MapScanner.getDictionary();
-                StringBuilder json = new StringBuilder("[");
+                int atlasSize = TextureAtlasGenerator.getAtlasSize();
+                
+                StringBuilder json = new StringBuilder("{\"atlasSize\":" + atlasSize + ",\"blocks\":{");
                 for (int i = 0; i < dict.size(); i++) {
-                    json.append("\"").append(dict.get(i)).append("\"").append(i < dict.size() - 1 ? "," : "");
+                    String blockKey = dict.get(i);
+                    boolean isTrans = blockKey.contains("water") || blockKey.contains("glass") || blockKey.contains("leaves");
+                    json.append(String.format(Locale.US, "\"%d\":{\"n\":\"%s\",\"t\":%d,\"tr\":%b}", 
+                        i, blockKey, i, isTrans));
+                    if (i < dict.size() - 1) json.append(",");
                 }
-                json.append("]");
+                json.append("}}");
                 sendResponse(exchange, json.toString(), "application/json", 200);
             });
 
@@ -89,12 +103,13 @@ public class RealTimeMap {
                     try {
                         StringBuilder json = new StringBuilder("[");
                         List<ServerPlayer> players = ms.getPlayerList().getPlayers();
+                        int globalVd = ms.getPlayerList().getViewDistance();
                         for (int i = 0; i < players.size(); i++) {
                             ServerPlayer p = players.get(i);
                             json.append(String.format(Locale.US,
-                                "{\"uuid\":\"%s\",\"name\":\"%s\",\"x\":%.2f,\"y\":%.2f,\"z\":%.2f,\"dimension\":\"%s\",\"yaw\":%.2f}",
+                                "{\"uuid\":\"%s\",\"name\":\"%s\",\"x\":%.2f,\"y\":%.2f,\"z\":%.2f,\"dimension\":\"%s\",\"yaw\":%.2f,\"view_distance\":%d}",
                                 p.getUUID(), p.getName().getString(), p.getX(), p.getY(), p.getZ(), 
-                                p.level().dimension().location(), p.getYRot()
+                                p.level().dimension().location(), p.getYRot(), globalVd
                             ));
                             if (i < players.size() - 1) json.append(",");
                         }
@@ -125,46 +140,34 @@ public class RealTimeMap {
                     CompletableFuture<String> future = new CompletableFuture<>();
                     CompletableFuture.runAsync(() -> {
                         try {
-                            // 1. Пытаемся найти в БД
                             String cached = MapDatabase.getChunk(dimName, x, z);
                             if (cached != null) {
                                 future.complete(cached);
                                 return;
                             }
 
-                            // 2. Если нет в БД, сканируем мир (нужен активный сервер)
                             MinecraftServer ms = minecraftServer;
                             if (ms == null) {
-                                future.completeExceptionally(new Exception("World not loaded and chunk not in DB"));
+                                future.completeExceptionally(new Exception("World not loaded"));
                                 return;
                             }
 
                             for (ServerLevel level : ms.getAllLevels()) {
                                 if (level.dimension().location().toString().equals(dimName)) {
                                     var data = MapScanner.getChunkData(level, x, z, mode);
-                                    
-                                    // Формируем JSON
                                     StringBuilder json = new StringBuilder("{");
                                     json.append("\"x\":").append(data.get("x")).append(",");
                                     json.append("\"z\":").append(data.get("z")).append(",");
-                                    json.append("\"groups\":{");
+                                    json.append("\"blocks\":[");
                                     
-                                    Map<Integer, List<Integer>> groups = (Map<Integer, List<Integer>>) data.get("groups");
-                                    int gIdx = 0;
-                                    for (Map.Entry<Integer, List<Integer>> entry : groups.entrySet()) {
-                                        json.append("\"").append(entry.getKey()).append("\":[");
-                                        List<Integer> list = entry.getValue();
-                                        for (int i = 0; i < list.size(); i++) {
-                                            json.append(list.get(i)).append(i < list.size() - 1 ? "," : "");
-                                        }
-                                        json.append("]").append(++gIdx < groups.size() ? "," : "");
+                                    List<Integer> blocks = (List<Integer>) data.get("blocks");
+                                    for (int i = 0; i < blocks.size(); i++) {
+                                        json.append(blocks.get(i)).append(i < blocks.size() - 1 ? "," : "");
                                     }
-                                    json.append("}}");
+                                    json.append("]}");
                                     
                                     String result = json.toString();
-                                    // Сохраняем в БД для будущего использования
                                     MapDatabase.saveChunk(dimName, x, z, result);
-                                    
                                     future.complete(result);
                                     return;
                                 }
@@ -284,14 +287,12 @@ public class RealTimeMap {
 
     private boolean checkApiKey(HttpExchange exchange) throws IOException {
         if (Config.apiKey == null || Config.apiKey.isEmpty()) {
-            return true; // Security disabled
+            return true;
         }
-        
         String providedKey = exchange.getRequestHeaders().getFirst("X-API-Key");
         if (Config.apiKey.equals(providedKey)) {
             return true;
         }
-        
         sendResponse(exchange, "{\"error\": \"Unauthorized\"}", "application/json", 401);
         return false;
     }
@@ -305,17 +306,12 @@ public class RealTimeMap {
         exchange.getResponseHeaders().add("Access-Control-Allow-Origin", "*");
         exchange.getResponseHeaders().add("Access-Control-Allow-Methods", "GET, OPTIONS, POST");
         exchange.getResponseHeaders().add("Access-Control-Allow-Headers", "Content-Type,Authorization,X-API-Key");
-        
-        if (!contentType.contains("charset=")) {
-            contentType += "; charset=UTF-8";
-        }
+        if (!contentType.contains("charset=")) contentType += "; charset=UTF-8";
         exchange.getResponseHeaders().set("Content-Type", contentType);
-
         if ("OPTIONS".equals(exchange.getRequestMethod())) {
             exchange.sendResponseHeaders(204, -1);
             return;
         }
-
         try {
             exchange.sendResponseHeaders(code, bytes.length);
             try (OutputStream os = exchange.getResponseBody()) {
