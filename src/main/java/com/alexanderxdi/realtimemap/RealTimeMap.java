@@ -26,6 +26,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
@@ -34,6 +35,7 @@ public class RealTimeMap {
     public static final String MODID = "realtimemap";
     public static final Logger LOGGER = LogManager.getLogger();
     private static HttpServer server;
+    private static final ExecutorService SCAN_EXECUTOR = Executors.newFixedThreadPool(8);
     private static MinecraftServer minecraftServer;
 
     public RealTimeMap(IEventBus modEventBus, ModContainer modContainer) {
@@ -113,7 +115,6 @@ public class RealTimeMap {
 
             server.createContext("/api/map/chunk", (exchange) -> {
                 if (!checkApiKey(exchange)) return;
-                LOGGER.info("API Request: {}?{}", exchange.getRequestURI().getPath(), exchange.getRequestURI().getQuery());
                 try {
                     Map<String, String> params = parseQuery(exchange.getRequestURI().getQuery());
                     String dimName = params.getOrDefault("dim", "minecraft:overworld");
@@ -128,7 +129,7 @@ public class RealTimeMap {
                     }
 
                     CompletableFuture<String> future = new CompletableFuture<>();
-                    ms.execute(() -> {
+                    CompletableFuture.runAsync(() -> {
                         try {
                             for (ServerLevel level : ms.getAllLevels()) {
                                 if (level.dimension().location().toString().equals(dimName)) {
@@ -136,34 +137,32 @@ public class RealTimeMap {
                                     StringBuilder json = new StringBuilder("{");
                                     json.append("\"x\":").append(data.get("x")).append(",");
                                     json.append("\"z\":").append(data.get("z")).append(",");
-                                    json.append("\"topY\":[");
-                                    int[] tY = (int[]) data.get("topY");
-                                    for(int i=0; i<tY.length; i++) {
-                                        json.append(tY[i]).append(i < tY.length-1 ? "," : "");
-                                    }
-                                    json.append("],\"columns\":[");
-                                    List<List<Integer>> columns = (List<List<Integer>>) data.get("columns");
-                                    for(int i=0; i<columns.size(); i++) {
-                                        json.append("[");
-                                        List<Integer> col = columns.get(i);
-                                        for(int j=0; j<col.size(); j++) {
-                                            json.append(col.get(j)).append(j < col.size()-1 ? "," : "");
+                                    json.append("\"groups\":{");
+                                    
+                                    Map<Integer, List<Integer>> groups = (Map<Integer, List<Integer>>) data.get("groups");
+                                    int gIdx = 0;
+                                    for (Map.Entry<Integer, List<Integer>> entry : groups.entrySet()) {
+                                        json.append("\"").append(entry.getKey()).append("\":[");
+                                        List<Integer> list = entry.getValue();
+                                        for (int i = 0; i < list.size(); i++) {
+                                            json.append(list.get(i)).append(i < list.size() - 1 ? "," : "");
                                         }
-                                        json.append("]").append(i < columns.size()-1 ? "," : "");
+                                        json.append("]").append(++gIdx < groups.size() ? "," : "");
                                     }
-                                    json.append("]}");
+                                    json.append("}}");
                                     future.complete(json.toString());
                                     return;
                                 }
                             }
                             future.completeExceptionally(new Exception("Dimension not found"));
-                        } catch (Exception e) {
-                            future.completeExceptionally(e);
+                        } catch (Throwable t) {
+                            LOGGER.error("[RTM-API] Async Scan Error: {}", t.getMessage());
+                            future.completeExceptionally(t);
                         }
-                    });
+                    }, SCAN_EXECUTOR);
 
                     try {
-                        String json = future.get(15, TimeUnit.SECONDS);
+                        String json = future.get(30, TimeUnit.SECONDS);
                         sendResponse(exchange, json, "application/json", 200);
                     } catch (Exception e) {
                         sendResponse(exchange, "{\"error\": \"Failed to get chunk data\"}", "application/json", 503);

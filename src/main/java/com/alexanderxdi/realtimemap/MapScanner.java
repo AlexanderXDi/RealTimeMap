@@ -41,45 +41,66 @@ public class MapScanner {
     public static Map<String, Object> getChunkData(ServerLevel level, int chunkX, int chunkZ, String mode) {
         Map<String, Object> data = new HashMap<>();
         boolean is3d = "3d".equalsIgnoreCase(mode);
-        
-        int[] topY = new int[256];
-        List<List<Integer>> columns = new ArrayList<>(256);
+        Map<Integer, List<Integer>> groups = new HashMap<>();
 
+        int minHeight = level.getMinBuildHeight();
         BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
-        
+        BlockPos.MutableBlockPos nPos = new BlockPos.MutableBlockPos();
+
+        int totalFound = 0;
         for (int z = 0; z < 16; z++) {
             for (int x = 0; x < 16; x++) {
                 int worldX = (chunkX << 4) + x;
                 int worldZ = (chunkZ << 4) + z;
                 
                 int surfaceY = level.getHeight(Heightmap.Types.WORLD_SURFACE, worldX, worldZ);
-                topY[z * 16 + x] = surfaceY;
-                
-                List<Integer> columnBlocks = new ArrayList<>();
-                if (is3d) {
-                    // Скан от поверхности до самого низа мира
-                    for (int y = surfaceY; y >= level.getMinBuildHeight(); y--) {
-                        pos.set(worldX, y - 1, worldZ);
-                        BlockState state = level.getBlockState(pos);
-                        String blockName = state.isAir() ? "air" : BuiltInRegistries.BLOCK.getKey(state.getBlock()).toString();
-                        columnBlocks.add(getOrAddBlockId(blockName));
-                    }
-                } else {
-                    // Режим 2D - только верхний блок
-                    pos.set(worldX, surfaceY - 1, worldZ);
+                int endY = is3d ? minHeight : surfaceY;
+
+                for (int y = surfaceY; y >= endY; y--) {
+                    pos.set(worldX, y - 1, worldZ);
                     BlockState state = level.getBlockState(pos);
-                    String blockName = state.isAir() ? "air" : BuiltInRegistries.BLOCK.getKey(state.getBlock()).toString();
-                    columnBlocks.add(getOrAddBlockId(blockName));
+                    if (state.isAir()) continue;
+
+                    int faces = 0;
+                    // 1:Top, 2:Bottom, 4:North(-Z), 8:South(+Z), 16:East(+X), 32:West(-X)
+                    
+                    if (y >= surfaceY || !level.getBlockState(nPos.set(worldX, y, worldZ)).isSolidRender(level, nPos)) faces |= 1;
+                    if (y > minHeight && !level.getBlockState(nPos.set(worldX, y - 2, worldZ)).isSolidRender(level, nPos)) faces |= 2;
+                    
+                    if (z == 0 || !level.getBlockState(nPos.set(worldX, y - 1, worldZ - 1)).isSolidRender(level, nPos)) faces |= 4;
+                    if (z == 15 || !level.getBlockState(nPos.set(worldX, y - 1, worldZ + 1)).isSolidRender(level, nPos)) faces |= 8;
+                    if (x == 15 || !level.getBlockState(nPos.set(worldX + 1, y - 1, worldZ)).isSolidRender(level, nPos)) faces |= 16;
+                    if (x == 0 || !level.getBlockState(nPos.set(worldX - 1, y - 1, worldZ)).isSolidRender(level, nPos)) faces |= 32;
+
+                    if (faces > 0 || !is3d) {
+                        String blockName = BuiltInRegistries.BLOCK.getKey(state.getBlock()).toString();
+                        int id = getOrAddBlockId(blockName);
+                        
+                        List<Integer> list = groups.computeIfAbsent(id, k -> new ArrayList<>());
+                        list.add(x);
+                        list.add(y - 1);
+                        list.add(z);
+                        list.add(faces);
+                        totalFound++;
+                        
+                        if (!is3d) break; 
+                    }
                 }
-                columns.add(columnBlocks);
             }
         }
 
+        if (totalFound > 0) {
+            RealTimeMap.LOGGER.info("RealTimeMap: Scanned chunk {}, {}. Found {} visible blocks.", chunkX, chunkZ, totalFound);
+        }
+        
         data.put("x", chunkX);
         data.put("z", chunkZ);
-        data.put("topY", topY);
-        data.put("columns", columns);
+        data.put("groups", groups);
         
         return data;
+    }
+
+    private static boolean isOpaque(ServerLevel level, BlockPos pos) {
+        return level.getBlockState(pos).isSolidRender(level, pos);
     }
 }
