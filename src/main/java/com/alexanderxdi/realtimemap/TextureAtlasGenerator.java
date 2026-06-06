@@ -81,7 +81,7 @@ public class TextureAtlasGenerator {
     }
 
     public static byte[] getAtlasBytes() {
-        if (atlasBytes == null) generate();
+        if (needsRebuild || atlasBytes == null) generate();
         return atlasBytes;
     }
 

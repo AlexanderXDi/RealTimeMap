@@ -234,6 +234,37 @@ public class RealTimeMap {
                 }
             });
 
+            server.createContext("/api/log", (exchange) -> {
+                if (!checkApiKey(exchange)) return;
+                try {
+                    if ("POST".equalsIgnoreCase(exchange.getRequestMethod())) {
+                        try (InputStream is = exchange.getRequestBody()) {
+                            String body = new String(is.readAllBytes(), StandardCharsets.UTF_8);
+                            String level = "INFO";
+                            String msg = body;
+                            if (body.startsWith("{")) {
+                                int lvlStart = body.indexOf("\"level\":\"");
+                                if (lvlStart != -1) {
+                                    int lvlEnd = body.indexOf("\"", lvlStart + 9);
+                                    if (lvlEnd != -1) level = body.substring(lvlStart + 9, lvlEnd).toUpperCase(Locale.US);
+                                }
+                                int msgStart = body.indexOf("\"msg\":\"");
+                                if (msgStart != -1) {
+                                    int msgEnd = body.indexOf("\"", msgStart + 7);
+                                    if (msgEnd != -1) msg = body.substring(msgStart + 7, msgEnd);
+                                }
+                            }
+                            LOGGER.info("[WebConsole-{}] {}", level, msg);
+                        }
+                        sendResponse(exchange, "{\"status\":\"ok\"}", "application/json", 200);
+                    } else {
+                        sendResponse(exchange, "{\"error\":\"Method not allowed\"}", "application/json", 405);
+                    }
+                } catch (Exception e) {
+                    sendResponse(exchange, "{\"error\":\"" + e.getMessage() + "\"}", "application/json", 500);
+                }
+            });
+
             server.createContext("/", (exchange) -> {
                 String path = exchange.getRequestURI().getPath();
                 if (path.startsWith("/api/")) {

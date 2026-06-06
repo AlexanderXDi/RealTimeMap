@@ -5,7 +5,50 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>rtmweb</title>
-    <script type="module" crossorigin src="/assets/index-CuVDysJu.js"></script>
+    <script>
+      (function() {
+        const originalLog = console.log;
+        const originalWarn = console.warn;
+        const originalError = console.error;
+        const apiBase = window.location.port === '5173' ? 'http://localhost:8080' : '';
+
+        function sendLog(level, args) {
+          const apiKey = localStorage.getItem('rtm_api_key') || '';
+          const msg = Array.from(args).map(arg => {
+            if (typeof arg === 'object') {
+              try { return JSON.stringify(arg); } catch(e) { return String(arg); }
+            }
+            return String(arg);
+          }).join(' ');
+
+          if (msg.includes('/api/log') || msg.includes('Failed to fetch')) return;
+
+          const headers = { 'Content-Type': 'application/json' };
+          if (apiKey) headers['X-API-Key'] = apiKey;
+
+          fetch(apiBase + '/api/log', {
+            method: 'POST',
+            headers: headers,
+            body: JSON.stringify({ level: level, msg: msg }),
+            mode: 'cors'
+          }).catch(() => {});
+        }
+
+        console.log = function() {
+          originalLog.apply(console, arguments);
+          sendLog('info', arguments);
+        };
+        console.warn = function() {
+          originalWarn.apply(console, arguments);
+          sendLog('warn', arguments);
+        };
+        console.error = function() {
+          originalError.apply(console, arguments);
+          sendLog('error', arguments);
+        };
+      })();
+    </script>
+    <script type="module" crossorigin src="/assets/index-Dthcbe91.js"></script>
     <link rel="stylesheet" crossorigin href="/assets/index-CPcOqauU.css">
   </head>
   <body>
