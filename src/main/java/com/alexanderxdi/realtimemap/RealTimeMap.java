@@ -32,6 +32,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
@@ -41,6 +42,7 @@ public class RealTimeMap {
     public static final Logger LOGGER = LogManager.getLogger();
     private static final DateTimeFormatter ISO_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'");
     private static HttpServer server;
+    private static final ExecutorService SCAN_EXECUTOR = Executors.newFixedThreadPool(8);
     private static MinecraftServer minecraftServer;
 
     public RealTimeMap(IEventBus modEventBus, ModContainer modContainer) {
@@ -65,7 +67,15 @@ public class RealTimeMap {
             server.createContext("/api/status", (exchange) -> {
                 LOGGER.info("API Status Request");
                 boolean worldReady = (minecraftServer != null);
-                sendResponse(exchange, "{\"status\": \"online\", \"version\": \"0.0.1\", \"world_loaded\": " + worldReady + "}", "application/json", 200);
+                String response = String.format(Locale.US, "{\"status\": \"online\", \"version\": \"0.1.0\", \"world_loaded\": %b, \"atlas_v\": %d, \"max_render_distance\": %d}", 
+                    worldReady, TextureAtlasGenerator.getAtlasVersion(), Config.maxRenderRadius);
+                sendResponse(exchange, response, "application/json", 200);
+            });
+
+            server.createContext("/api/map/atlas.png", (exchange) -> {
+                if (!checkApiKey(exchange)) return;
+                byte[] bytes = TextureAtlasGenerator.getAtlasBytes();
+                sendResponse(exchange, bytes, "image/png", 200);
             });
 
             server.createContext("/api/logs", (exchange) -> {
@@ -101,11 +111,17 @@ public class RealTimeMap {
                 LOGGER.info("API Dictionary Request");
                 if (!checkApiKey(exchange)) return;
                 List<String> dict = MapScanner.getDictionary();
-                StringBuilder json = new StringBuilder("[");
+                int atlasSize = TextureAtlasGenerator.getAtlasSize();
+                
+                StringBuilder json = new StringBuilder("{\"atlasSize\":" + atlasSize + ",\"blocks\":{");
                 for (int i = 0; i < dict.size(); i++) {
-                    json.append("\"").append(dict.get(i)).append("\"").append(i < dict.size() - 1 ? "," : "");
+                    String blockKey = dict.get(i);
+                    boolean isTrans = blockKey.contains("water") || blockKey.contains("glass") || blockKey.contains("leaves");
+                    json.append(String.format(Locale.US, "\"%d\":{\"n\":\"%s\",\"t\":%d,\"tr\":%b}", 
+                        i, blockKey, i, isTrans));
+                    if (i < dict.size() - 1) json.append(",");
                 }
-                json.append("]");
+                json.append("}}");
                 sendResponse(exchange, json.toString(), "application/json", 200);
             });
 
@@ -123,12 +139,13 @@ public class RealTimeMap {
                     try {
                         StringBuilder json = new StringBuilder("[");
                         List<ServerPlayer> players = ms.getPlayerList().getPlayers();
+                        int globalVd = ms.getPlayerList().getViewDistance();
                         for (int i = 0; i < players.size(); i++) {
                             ServerPlayer p = players.get(i);
                             json.append(String.format(Locale.US,
-                                "{\"uuid\":\"%s\",\"name\":\"%s\",\"x\":%.2f,\"y\":%.2f,\"z\":%.2f,\"dimension\":\"%s\",\"yaw\":%.2f}",
+                                "{\"uuid\":\"%s\",\"name\":\"%s\",\"x\":%.2f,\"y\":%.2f,\"z\":%.2f,\"dimension\":\"%s\",\"yaw\":%.2f,\"view_distance\":%d}",
                                 p.getUUID(), p.getName().getString(), p.getX(), p.getY(), p.getZ(), 
-                                p.level().dimension().location(), p.getYRot()
+                                p.level().dimension().location(), p.getYRot(), globalVd
                             ));
                             if (i < players.size() - 1) json.append(",");
                         }
@@ -149,7 +166,6 @@ public class RealTimeMap {
 
             server.createContext("/api/map/chunk", (exchange) -> {
                 if (!checkApiKey(exchange)) return;
-                LOGGER.info("API Request: {}?{}", exchange.getRequestURI().getPath(), exchange.getRequestURI().getQuery());
                 try {
                     Map<String, String> params = parseQuery(exchange.getRequestURI().getQuery());
                     String dimName = params.getOrDefault("dim", "minecraft:overworld");
@@ -157,52 +173,53 @@ public class RealTimeMap {
                     int z = Integer.parseInt(params.getOrDefault("z", "0"));
                     String mode = params.getOrDefault("mode", "2d");
 
-                    MinecraftServer ms = minecraftServer;
-                    if (ms == null) {
-                        sendResponse(exchange, "{\"error\": \"World not loaded\"}", "application/json", 503);
-                        return;
-                    }
-
                     CompletableFuture<String> future = new CompletableFuture<>();
-                    ms.execute(() -> {
+                    CompletableFuture.runAsync(() -> {
                         try {
+                            String cached = MapDatabase.getChunk(dimName, x, z);
+                            if (cached != null) {
+                                future.complete(cached);
+                                return;
+                            }
+
+                            MinecraftServer ms = minecraftServer;
+                            if (ms == null) {
+                                future.completeExceptionally(new Exception("World not loaded"));
+                                return;
+                            }
+
                             for (ServerLevel level : ms.getAllLevels()) {
                                 if (level.dimension().location().toString().equals(dimName)) {
                                     var data = MapScanner.getChunkData(level, x, z, mode);
                                     StringBuilder json = new StringBuilder("{");
                                     json.append("\"x\":").append(data.get("x")).append(",");
                                     json.append("\"z\":").append(data.get("z")).append(",");
-                                    json.append("\"topY\":[");
-                                    int[] tY = (int[]) data.get("topY");
-                                    for(int i=0; i<tY.length; i++) {
-                                        json.append(tY[i]).append(i < tY.length-1 ? "," : "");
-                                    }
-                                    json.append("],\"columns\":[");
-                                    List<List<Integer>> columns = (List<List<Integer>>) data.get("columns");
-                                    for(int i=0; i<columns.size(); i++) {
-                                        json.append("[");
-                                        List<Integer> col = columns.get(i);
-                                        for(int j=0; j<col.size(); j++) {
-                                            json.append(col.get(j)).append(j < col.size()-1 ? "," : "");
-                                        }
-                                        json.append("]").append(i < columns.size()-1 ? "," : "");
+                                    json.append("\"blocks\":[");
+                                    
+                                    List<Integer> blocks = (List<Integer>) data.get("blocks");
+                                    for (int i = 0; i < blocks.size(); i++) {
+                                        json.append(blocks.get(i)).append(i < blocks.size() - 1 ? "," : "");
                                     }
                                     json.append("]}");
-                                    future.complete(json.toString());
+                                    
+                                    String result = json.toString();
+                                    MapDatabase.saveChunk(dimName, x, z, result);
+                                    future.complete(result);
                                     return;
                                 }
                             }
                             future.completeExceptionally(new Exception("Dimension not found"));
-                        } catch (Exception e) {
-                            future.completeExceptionally(e);
+                        } catch (Throwable t) {
+                            LOGGER.error("[RTM-API] Async Scan/DB Error: {}", t.getMessage());
+                            future.completeExceptionally(t);
                         }
-                    });
+                    }, SCAN_EXECUTOR);
 
                     try {
-                        String json = future.get(15, TimeUnit.SECONDS);
+                        String json = future.get(30, TimeUnit.SECONDS);
                         sendResponse(exchange, json, "application/json", 200);
                     } catch (Exception e) {
-                        sendResponse(exchange, "{\"error\": \"Failed to get chunk data\"}", "application/json", 503);
+                        sendResponse(exchange, "{\"error\": \"" + e.getMessage() + "\"}", "application/json", 503);
                     }
                 } catch (Exception e) {
                     sendResponse(exchange, "{\"error\": \"Bad request: " + e.getMessage() + "\"}", "application/json", 400);
@@ -250,6 +267,37 @@ public class RealTimeMap {
                     }
                 } catch (Exception e) {
                     sendResponse(exchange, "{\"error\": \"Bad request\"}", "application/json", 400);
+                }
+            });
+
+            server.createContext("/api/log", (exchange) -> {
+                if (!checkApiKey(exchange)) return;
+                try {
+                    if ("POST".equalsIgnoreCase(exchange.getRequestMethod())) {
+                        try (InputStream is = exchange.getRequestBody()) {
+                            String body = new String(is.readAllBytes(), StandardCharsets.UTF_8);
+                            String level = "INFO";
+                            String msg = body;
+                            if (body.startsWith("{")) {
+                                int lvlStart = body.indexOf("\"level\":\"");
+                                if (lvlStart != -1) {
+                                    int lvlEnd = body.indexOf("\"", lvlStart + 9);
+                                    if (lvlEnd != -1) level = body.substring(lvlStart + 9, lvlEnd).toUpperCase(Locale.US);
+                                }
+                                int msgStart = body.indexOf("\"msg\":\"");
+                                if (msgStart != -1) {
+                                    int msgEnd = body.indexOf("\"", msgStart + 7);
+                                    if (msgEnd != -1) msg = body.substring(msgStart + 7, msgEnd);
+                                }
+                            }
+                            LOGGER.info("[WebConsole-{}] {}", level, msg);
+                        }
+                        sendResponse(exchange, "{\"status\":\"ok\"}", "application/json", 200);
+                    } else {
+                        sendResponse(exchange, "{\"error\":\"Method not allowed\"}", "application/json", 405);
+                    }
+                } catch (Exception e) {
+                    sendResponse(exchange, "{\"error\":\"" + e.getMessage() + "\"}", "application/json", 500);
                 }
             });
 
@@ -306,14 +354,12 @@ public class RealTimeMap {
 
     private boolean checkApiKey(HttpExchange exchange) throws IOException {
         if (Config.apiKey == null || Config.apiKey.isEmpty()) {
-            return true; // Security disabled
+            return true;
         }
-        
         String providedKey = exchange.getRequestHeaders().getFirst("X-API-Key");
         if (Config.apiKey.equals(providedKey)) {
             return true;
         }
-        
         sendResponse(exchange, "{\"error\": \"Unauthorized\"}", "application/json", 401);
         return false;
     }
@@ -327,18 +373,13 @@ public class RealTimeMap {
         exchange.getResponseHeaders().add("Access-Control-Allow-Origin", "*");
         exchange.getResponseHeaders().add("Access-Control-Allow-Methods", "GET, OPTIONS, POST");
         exchange.getResponseHeaders().add("Access-Control-Allow-Headers", "Content-Type,Authorization,X-API-Key");
-        
-        if (!contentType.contains("charset=")) {
-            contentType += "; charset=UTF-8";
-        }
+        if (!contentType.contains("charset=")) contentType += "; charset=UTF-8";
         exchange.getResponseHeaders().set("Content-Type", contentType);
-
         if ("OPTIONS".equals(exchange.getRequestMethod())) {
             exchange.sendResponseHeaders(204, -1);
             logHttpRequest(exchange, 204, 0);
             return;
         }
-
         try {
             exchange.sendResponseHeaders(code, bytes.length);
             try (OutputStream os = exchange.getResponseBody()) {
@@ -409,11 +450,15 @@ public class RealTimeMap {
 
     private void onServerStarted(ServerStartedEvent event) {
         minecraftServer = event.getServer();
-        LOGGER.info("RealTimeMap: Minecraft Server started, API ready.");
+        String worldName = minecraftServer.getWorldData().getLevelName();
+        MapDatabase.init(worldName);
+        MapScanner.loadDictionaryFromDb();
+        LOGGER.info("RealTimeMap: Minecraft Server started, API and DB ready.");
     }
 
     private void onServerStopped(ServerStoppedEvent event) {
         minecraftServer = null;
+        MapDatabase.close();
         LOGGER.info("RealTimeMap: Minecraft Server stopped, API suspended.");
     }
 }
