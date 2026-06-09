@@ -393,10 +393,13 @@ public class RealTimeMap {
     }
 
     private static void logHttpRequest(HttpExchange exchange, int code, int responseLength) {
+        String path = exchange.getRequestURI().toString();
+        if (path.contains("/api/logs") || path.contains("/api/log")) {
+            return;
+        }
         String timestamp = LocalDateTime.now().format(ISO_FORMATTER);
         String remoteIp = exchange.getRemoteAddress().toString();
         String method = exchange.getRequestMethod();
-        String path = exchange.getRequestURI().toString();
         
         String logLine = String.format("[%s] [%s] %s %s -> Status %d (%d bytes)",
             timestamp, remoteIp, method, path, code, responseLength);
