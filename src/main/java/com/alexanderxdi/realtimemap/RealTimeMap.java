@@ -16,11 +16,17 @@ import net.neoforged.neoforge.event.server.ServerStoppedEvent;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
+import java.io.BufferedWriter;
+import java.io.File;
+import java.io.FileWriter;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.io.PrintWriter;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
@@ -33,6 +39,7 @@ import java.util.concurrent.TimeUnit;
 public class RealTimeMap {
     public static final String MODID = "realtimemap";
     public static final Logger LOGGER = LogManager.getLogger();
+    private static final DateTimeFormatter ISO_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'");
     private static HttpServer server;
     private static MinecraftServer minecraftServer;
 
@@ -59,6 +66,35 @@ public class RealTimeMap {
                 LOGGER.info("API Status Request");
                 boolean worldReady = (minecraftServer != null);
                 sendResponse(exchange, "{\"status\": \"online\", \"version\": \"0.0.1\", \"world_loaded\": " + worldReady + "}", "application/json", 200);
+            });
+
+            server.createContext("/api/logs", (exchange) -> {
+                if ("POST".equals(exchange.getRequestMethod())) {
+                    try (InputStream is = exchange.getRequestBody()) {
+                        byte[] bodyBytes = is.readAllBytes();
+                        String body = new String(bodyBytes, StandardCharsets.UTF_8);
+                        
+                        String timestamp = parseJsonField(body, "timestamp");
+                        String level = parseJsonField(body, "level").toUpperCase();
+                        String message = parseJsonField(body, "message");
+                        
+                        message = message.replace("\\n", "\n").replace("\\\"", "\"").replace("\\\\", "\\");
+                        
+                        LOGGER.info("[WEBSITE] [{}] {}", level, message);
+                        
+                        String fileLine = String.format("[%s] [%s] %s", timestamp, level, message);
+                        writeLogToFile("website_console.log", fileLine);
+                        
+                        sendResponse(exchange, "{\"status\":\"ok\"}", "application/json", 200);
+                    } catch (Exception e) {
+                        LOGGER.error("Failed to parse client log: ", e);
+                        sendResponse(exchange, "{\"error\":\"" + e.getMessage() + "\"}", "application/json", 500);
+                    }
+                } else if ("OPTIONS".equals(exchange.getRequestMethod())) {
+                    sendResponse(exchange, "", "text/plain", 204);
+                } else {
+                    sendResponse(exchange, "{\"error\":\"Method Not Allowed\"}", "application/json", 405);
+                }
             });
 
             server.createContext("/api/map/dictionary", (exchange) -> {
@@ -299,6 +335,7 @@ public class RealTimeMap {
 
         if ("OPTIONS".equals(exchange.getRequestMethod())) {
             exchange.sendResponseHeaders(204, -1);
+            logHttpRequest(exchange, 204, 0);
             return;
         }
 
@@ -307,9 +344,67 @@ public class RealTimeMap {
             try (OutputStream os = exchange.getResponseBody()) {
                 os.write(bytes);
             }
+            logHttpRequest(exchange, code, bytes.length);
         } catch (IOException e) {
             LOGGER.warn("Failed to send response to client: {}", e.getMessage());
+            logHttpRequest(exchange, code, -1);
         }
+    }
+
+    private static void logHttpRequest(HttpExchange exchange, int code, int responseLength) {
+        String timestamp = LocalDateTime.now().format(ISO_FORMATTER);
+        String remoteIp = exchange.getRemoteAddress().toString();
+        String method = exchange.getRequestMethod();
+        String path = exchange.getRequestURI().toString();
+        
+        String logLine = String.format("[%s] [%s] %s %s -> Status %d (%d bytes)",
+            timestamp, remoteIp, method, path, code, responseLength);
+            
+        LOGGER.info(logLine);
+        writeLogToFile("server_http.log", logLine);
+    }
+
+    private static synchronized void writeLogToFile(String fileName, String line) {
+        try {
+            File geminiDir = new File("../../Gemini");
+            File logFile;
+            if (geminiDir.exists() && geminiDir.isDirectory()) {
+                logFile = new File(geminiDir, fileName);
+            } else {
+                File logsDir = new File("logs");
+                if (!logsDir.exists()) {
+                    logsDir.mkdirs();
+                }
+                logFile = new File(logsDir, fileName);
+            }
+
+            try (FileWriter fw = new FileWriter(logFile, true);
+                 BufferedWriter bw = new BufferedWriter(fw);
+                 PrintWriter out = new PrintWriter(bw)) {
+                out.println(line);
+            }
+        } catch (Exception e) {
+            System.err.println("[RealTimeMap Log Error] Failed to write log: " + e.getMessage());
+        }
+    }
+
+    private static String parseJsonField(String json, String field) {
+        String pattern = "\"" + field + "\":\"";
+        int idx = json.indexOf(pattern);
+        if (idx == -1) {
+            pattern = "\"" + field + "\":";
+            idx = json.indexOf(pattern);
+            if (idx == -1) return "";
+            int start = idx + pattern.length();
+            int end = json.indexOf(",", start);
+            if (end == -1) end = json.indexOf("}", start);
+            if (end == -1) return "";
+            return json.substring(start, end).trim().replace("\"", "");
+        }
+        int start = idx + pattern.length();
+        int end = json.indexOf("\"", start);
+        if (end == -1) return "";
+        return json.substring(start, end);
     }
 
     private void onServerStarted(ServerStartedEvent event) {
