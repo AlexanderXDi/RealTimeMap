@@ -57,6 +57,8 @@ repositories {
 
 dependencies {
     // No external web dependencies! Using built-in Java HttpServer.
+    implementation 'org.xerial:sqlite-jdbc:3.45.1.0'
+    additionalRuntimeClasspath 'org.xerial:sqlite-jdbc:3.45.1.0'
 }
 
 tasks.withType(ProcessResources).configureEach {
