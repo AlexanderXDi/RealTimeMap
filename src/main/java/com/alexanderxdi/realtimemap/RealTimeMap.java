@@ -42,8 +42,21 @@ public class RealTimeMap {
     public static final Logger LOGGER = LogManager.getLogger();
     private static final DateTimeFormatter ISO_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'");
     private static HttpServer server;
-    private static final ExecutorService SCAN_EXECUTOR = Executors.newFixedThreadPool(8);
+    private static final ExecutorService SCAN_EXECUTOR = Executors.newFixedThreadPool(
+        Math.max(1, Runtime.getRuntime().availableProcessors() / 2),
+        new java.util.concurrent.ThreadFactory() {
+            private final java.util.concurrent.atomic.AtomicInteger counter = new java.util.concurrent.atomic.AtomicInteger(1);
+            @Override
+            public Thread newThread(Runnable r) {
+                Thread t = new Thread(r, "RTM-Scan-" + counter.getAndIncrement());
+                t.setPriority(Thread.MIN_PRIORITY);
+                t.setDaemon(true);
+                return t;
+            }
+        }
+    );
     private static MinecraftServer minecraftServer;
+    private static final Map<String, CompletableFuture<String>> ACTIVE_SCANS = new java.util.concurrent.ConcurrentHashMap<>();
 
     public RealTimeMap(IEventBus modEventBus, ModContainer modContainer) {
         LOGGER.info("RealTimeMap Mod: Initializing...");
@@ -51,6 +64,9 @@ public class RealTimeMap {
         modEventBus.addListener(this::commonSetup);
         NeoForge.EVENT_BUS.addListener(this::onServerStarted);
         NeoForge.EVENT_BUS.addListener(this::onServerStopped);
+        NeoForge.EVENT_BUS.addListener(this::onBlockBreak);
+        NeoForge.EVENT_BUS.addListener(this::onBlockPlace);
+        NeoForge.EVENT_BUS.addListener(this::onExplosionDetonate);
     }
 
     private void commonSetup(final FMLCommonSetupEvent event) {
@@ -139,13 +155,13 @@ public class RealTimeMap {
                     try {
                         StringBuilder json = new StringBuilder("[");
                         List<ServerPlayer> players = ms.getPlayerList().getPlayers();
-                        int globalVd = ms.getPlayerList().getViewDistance();
                         for (int i = 0; i < players.size(); i++) {
                             ServerPlayer p = players.get(i);
+                            int playerVd = p.clientInformation().viewDistance();
                             json.append(String.format(Locale.US,
                                 "{\"uuid\":\"%s\",\"name\":\"%s\",\"x\":%.2f,\"y\":%.2f,\"z\":%.2f,\"dimension\":\"%s\",\"yaw\":%.2f,\"view_distance\":%d}",
                                 p.getUUID(), p.getName().getString(), p.getX(), p.getY(), p.getZ(), 
-                                p.level().dimension().location(), p.getYRot(), globalVd
+                                p.level().dimension().location(), p.getYRot(), playerVd
                             ));
                             if (i < players.size() - 1) json.append(",");
                         }
@@ -166,6 +182,7 @@ public class RealTimeMap {
 
             server.createContext("/api/map/chunk", (exchange) -> {
                 if (!checkApiKey(exchange)) return;
+                String scanKey = "";
                 try {
                     Map<String, String> params = parseQuery(exchange.getRequestURI().getQuery());
                     String dimName = params.getOrDefault("dim", "minecraft:overworld");
@@ -173,56 +190,177 @@ public class RealTimeMap {
                     int z = Integer.parseInt(params.getOrDefault("z", "0"));
                     String mode = params.getOrDefault("mode", "2d");
 
-                    CompletableFuture<String> future = new CompletableFuture<>();
-                    CompletableFuture.runAsync(() -> {
-                        try {
-                            String cached = MapDatabase.getChunk(dimName, x, z);
-                            if (cached != null) {
-                                future.complete(cached);
-                                return;
-                            }
+                    scanKey = dimName + "_" + x + "_" + z + "_" + mode;
 
-                            MinecraftServer ms = minecraftServer;
-                            if (ms == null) {
-                                future.completeExceptionally(new Exception("World not loaded"));
-                                return;
-                            }
-
-                            for (ServerLevel level : ms.getAllLevels()) {
-                                if (level.dimension().location().toString().equals(dimName)) {
-                                    var data = MapScanner.getChunkData(level, x, z, mode);
-                                    StringBuilder json = new StringBuilder("{");
-                                    json.append("\"x\":").append(data.get("x")).append(",");
-                                    json.append("\"z\":").append(data.get("z")).append(",");
-                                    json.append("\"blocks\":[");
-                                    
-                                    List<Integer> blocks = (List<Integer>) data.get("blocks");
-                                    for (int i = 0; i < blocks.size(); i++) {
-                                        json.append(blocks.get(i)).append(i < blocks.size() - 1 ? "," : "");
+                    CompletableFuture<String> future = ACTIVE_SCANS.computeIfAbsent(scanKey, key -> {
+                        return CompletableFuture.supplyAsync(() -> {
+                            try {
+                                String cached = MapDatabase.getChunk(dimName, x, z, mode);
+                                if (cached != null) {
+                                    if (isValidCache(cached, mode)) {
+                                        return cached;
+                                    } else {
+                                        LOGGER.warn("[RTM-API] Invalid cache format for {}, {}, {} (mode: {}). Invalidating cache.", dimName, x, z, mode);
+                                        MapDatabase.deleteChunk(dimName, x, z);
                                     }
-                                    json.append("]}");
-                                    
-                                    String result = json.toString();
-                                    MapDatabase.saveChunk(dimName, x, z, result);
-                                    future.complete(result);
-                                    return;
                                 }
+
+                                MinecraftServer ms = minecraftServer;
+                                if (ms == null) {
+                                    throw new Exception("World not loaded");
+                                }
+
+                                for (ServerLevel level : ms.getAllLevels()) {
+                                    if (level.dimension().location().toString().equals(dimName)) {
+                                        if ("2d".equalsIgnoreCase(mode)) {
+                                            byte[] pngBytes = MapScanner.getChunk2DTile(level, x, z);
+                                            String base64 = java.util.Base64.getEncoder().encodeToString(pngBytes);
+                                            MapDatabase.saveChunk(dimName, x, z, mode, base64);
+                                            return base64;
+                                        } else {
+                                            var data = MapScanner.getChunkData(level, x, z, mode);
+                                            List<Integer> blocks = (List<Integer>) data.get("blocks");
+                                            StringBuilder json = new StringBuilder(blocks.size() * 4 + 64);
+                                            json.append("{\"x\":").append(data.get("x")).append(",");
+                                            json.append("\"z\":").append(data.get("z")).append(",");
+                                            json.append("\"blocks\":[");
+                                            for (int i = 0; i < blocks.size(); i++) {
+                                                json.append(blocks.get(i)).append(i < blocks.size() - 1 ? "," : "");
+                                            }
+                                            json.append("]}");
+                                            String result = json.toString();
+                                            MapDatabase.saveChunk(dimName, x, z, mode, result);
+                                            return result;
+                                        }
+                                    }
+                                }
+                                throw new Exception("Dimension not found");
+                            } catch (Throwable t) {
+                                LOGGER.error("[RTM-API] Async Scan/DB Error: {}", t.getMessage());
+                                throw new RuntimeException(t);
                             }
-                            future.completeExceptionally(new Exception("Dimension not found"));
-                        } catch (Throwable t) {
-                            LOGGER.error("[RTM-API] Async Scan/DB Error: {}", t.getMessage());
-                            future.completeExceptionally(t);
-                        }
-                    }, SCAN_EXECUTOR);
+                        }, SCAN_EXECUTOR);
+                    });
 
                     try {
-                        String json = future.get(30, TimeUnit.SECONDS);
-                        sendResponse(exchange, json, "application/json", 200);
+                        String result = future.get(30, TimeUnit.SECONDS);
+                        if ("2d".equalsIgnoreCase(mode)) {
+                            byte[] pngBytes = java.util.Base64.getDecoder().decode(result);
+                            sendResponse(exchange, pngBytes, "image/png", 200);
+                        } else {
+                            sendResponse(exchange, result, "application/json", 200);
+                        }
                     } catch (Exception e) {
                         sendResponse(exchange, "{\"error\": \"" + e.getMessage() + "\"}", "application/json", 503);
+                    } finally {
+                        if (!scanKey.isEmpty()) {
+                            ACTIVE_SCANS.remove(scanKey);
+                        }
                     }
                 } catch (Exception e) {
                     sendResponse(exchange, "{\"error\": \"Bad request: " + e.getMessage() + "\"}", "application/json", 400);
+                }
+            });
+
+            server.createContext("/api/map/chunks", (exchange) -> {
+                if (!checkApiKey(exchange)) return;
+                if (!"POST".equalsIgnoreCase(exchange.getRequestMethod())) {
+                    sendResponse(exchange, "{\"error\":\"Method Not Allowed\"}", "application/json", 405);
+                    return;
+                }
+                try (InputStream is = exchange.getRequestBody()) {
+                    byte[] bodyBytes = is.readAllBytes();
+                    String body = new String(bodyBytes, StandardCharsets.UTF_8);
+
+                    String dimName = parseJsonField(body, "dim");
+                    String mode = parseJsonField(body, "mode");
+                    if (dimName.isEmpty()) dimName = "minecraft:overworld";
+                    if (mode.isEmpty()) mode = "2d";
+
+                    List<ChunkCoord> coords = parseChunksCoords(body);
+                    if (coords.isEmpty()) {
+                        sendResponse(exchange, "[]", "application/json", 200);
+                        return;
+                    }
+
+                    List<CompletableFuture<String>> futures = new java.util.ArrayList<>();
+                    for (ChunkCoord coord : coords) {
+                        int cx = coord.x;
+                        int cz = coord.z;
+                        String dim = dimName;
+                        String m = mode;
+                        String scanKey = dim + "_" + cx + "_" + cz + "_" + m;
+
+                        CompletableFuture<String> future = ACTIVE_SCANS.computeIfAbsent(scanKey, key -> {
+                            return CompletableFuture.supplyAsync(() -> {
+                                try {
+                                    String cached = MapDatabase.getChunk(dim, cx, cz, m);
+                                    if (cached != null) {
+                                        if (isValidCache(cached, m)) {
+                                            return cached;
+                                        } else {
+                                            LOGGER.warn("[RTM-API] Invalid cache format for {}, {}, {} (mode: {}). Invalidating cache.", dim, cx, cz, m);
+                                            MapDatabase.deleteChunk(dim, cx, cz);
+                                        }
+                                    }
+
+                                    MinecraftServer ms = minecraftServer;
+                                    if (ms == null) {
+                                        throw new Exception("World not loaded");
+                                    }
+
+                                    for (ServerLevel level : ms.getAllLevels()) {
+                                        if (level.dimension().location().toString().equals(dim)) {
+                                            if ("2d".equalsIgnoreCase(m)) {
+                                                byte[] pngBytes = MapScanner.getChunk2DTile(level, cx, cz);
+                                                String base64 = java.util.Base64.getEncoder().encodeToString(pngBytes);
+                                                MapDatabase.saveChunk(dim, cx, cz, m, base64);
+                                                return base64;
+                                            } else {
+                                                var data = MapScanner.getChunkData(level, cx, cz, m);
+                                                List<Integer> blocks = (List<Integer>) data.get("blocks");
+                                                StringBuilder json = new StringBuilder(blocks.size() * 4 + 64);
+                                                json.append("{\"x\":").append(data.get("x")).append(",");
+                                                json.append("\"z\":").append(data.get("z")).append(",");
+                                                json.append("\"blocks\":[");
+                                                for (int i = 0; i < blocks.size(); i++) {
+                                                    json.append(blocks.get(i)).append(i < blocks.size() - 1 ? "," : "");
+                                                }
+                                                json.append("]}");
+                                                String result = json.toString();
+                                                MapDatabase.saveChunk(dim, cx, cz, m, result);
+                                                return result;
+                                            }
+                                        }
+                                    }
+                                    throw new Exception("Dimension not found");
+                                } catch (Throwable t) {
+                                    return "{\"x\":" + cx + ",\"z\":" + cz + ",\"error\":true}";
+                                }
+                            }, SCAN_EXECUTOR);
+                        });
+
+                        future.whenComplete((res, ex) -> ACTIVE_SCANS.remove(scanKey));
+                        futures.add(future);
+                    }
+
+                    CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).get(30, TimeUnit.SECONDS);
+
+                    java.util.List<String> results = new java.util.ArrayList<>();
+                    for (int i = 0; i < futures.size(); i++) {
+                        results.add(futures.get(i).join());
+                    }
+
+                    if ("2d".equalsIgnoreCase(mode)) {
+                        byte[] binaryData = serialize2DTilesToBinary(coords, results);
+                        sendResponse(exchange, binaryData, "application/octet-stream", 200);
+                    } else {
+                        byte[] binaryData = serializeChunksToBinary(results);
+                        sendResponse(exchange, binaryData, "application/octet-stream", 200);
+                    }
+                } catch (Exception e) {
+                    LOGGER.error("[RTM-API] Chunks Batch Error: ", e);
+                    sendResponse(exchange, "{\"error\": \"" + e.getMessage() + "\"}", "application/json", 500);
                 }
             });
 
@@ -451,6 +589,171 @@ public class RealTimeMap {
         return json.substring(start, end);
     }
 
+    private static class ChunkCoord {
+        int x, z;
+        ChunkCoord(int x, int z) { this.x = x; this.z = z; }
+    }
+
+    private static java.util.List<ChunkCoord> parseChunksCoords(String json) {
+        java.util.List<ChunkCoord> list = new java.util.ArrayList<>();
+        int startIdx = json.indexOf("\"chunks\":");
+        if (startIdx == -1) return list;
+        int arrayStart = json.indexOf("[", startIdx);
+        if (arrayStart == -1) return list;
+        int arrayEnd = json.indexOf("]", arrayStart);
+        if (arrayEnd == -1) return list;
+        
+        String chunksArrayStr = json.substring(arrayStart + 1, arrayEnd);
+        int pos = 0;
+        while (true) {
+            int objStart = chunksArrayStr.indexOf("{", pos);
+            if (objStart == -1) break;
+            int objEnd = chunksArrayStr.indexOf("}", objStart);
+            if (objEnd == -1) break;
+            String objStr = chunksArrayStr.substring(objStart + 1, objEnd);
+            
+            int xVal = 0;
+            int zVal = 0;
+            String[] pairs = objStr.split(",");
+            for (String pair : pairs) {
+                String[] kv = pair.split(":");
+                if (kv.length == 2) {
+                    String key = kv[0].replace("\"", "").trim();
+                    String val = kv[1].replace("\"", "").trim();
+                    if ("x".equals(key)) {
+                        try {
+                            xVal = Integer.parseInt(val);
+                        } catch (NumberFormatException ignored) {}
+                    } else if ("z".equals(key)) {
+                        try {
+                            zVal = Integer.parseInt(val);
+                        } catch (NumberFormatException ignored) {}
+                    }
+                }
+            }
+            list.add(new ChunkCoord(xVal, zVal));
+            pos = objEnd + 1;
+        }
+        return list;
+    }
+
+    private static java.util.List<Integer> parseJsonBlocks(String json) {
+        java.util.List<Integer> list = new java.util.ArrayList<>();
+        int startIdx = json.indexOf("\"blocks\":[");
+        if (startIdx == -1) return list;
+        int endIdx = json.indexOf("]", startIdx);
+        if (endIdx == -1) return list;
+        String arrayStr = json.substring(startIdx + 10, endIdx).trim();
+        if (arrayStr.isEmpty()) return list;
+        String[] tokens = arrayStr.split(",");
+        for (String token : tokens) {
+            try {
+                list.add(Integer.parseInt(token.trim()));
+            } catch (NumberFormatException ignored) {}
+        }
+        return list;
+    }
+    private static boolean isValidCache(String cached, String mode) {
+        if (cached == null) return false;
+        if ("2d".equalsIgnoreCase(mode)) {
+            return !cached.startsWith("{");
+        } else {
+            return cached.startsWith("{");
+        }
+    }
+
+    private static byte[] serialize2DTilesToBinary(java.util.List<ChunkCoord> coords, java.util.List<String> base64Results) {
+        int chunksCount = base64Results.size();
+        java.util.List<byte[]> pngs = new java.util.ArrayList<>();
+        java.util.List<ChunkCoord> validCoords = new java.util.ArrayList<>();
+        
+        int estimatedSize = 4;
+        for (int i = 0; i < chunksCount; i++) {
+            String res = base64Results.get(i);
+            if (res == null || res.contains("\"error\":true")) {
+                continue;
+            }
+            try {
+                byte[] pngBytes = java.util.Base64.getDecoder().decode(res);
+                pngs.add(pngBytes);
+                validCoords.add(coords.get(i));
+                estimatedSize += 12 + pngBytes.length;
+            } catch (Exception ignored) {}
+        }
+        
+        java.nio.ByteBuffer buffer = java.nio.ByteBuffer.allocate(estimatedSize);
+        buffer.order(java.nio.ByteOrder.LITTLE_ENDIAN);
+        
+        buffer.putInt(validCoords.size());
+        for (int i = 0; i < validCoords.size(); i++) {
+            ChunkCoord coord = validCoords.get(i);
+            byte[] png = pngs.get(i);
+            
+            buffer.putInt(coord.x);
+            buffer.putInt(coord.z);
+            buffer.putInt(png.length);
+            buffer.put(png);
+        }
+        
+        return buffer.array();
+    }
+
+    private static byte[] serializeChunksToBinary(java.util.List<String> jsonChunks) {
+        int estimatedSize = 4;
+        java.util.List<java.util.List<Integer>> allBlocks = new java.util.ArrayList<>();
+        java.util.List<int[]> coords = new java.util.ArrayList<>();
+        
+        for (String json : jsonChunks) {
+            if (json == null || json.contains("\"error\":true")) {
+                continue;
+            }
+            int cx = 0;
+            int cz = 0;
+            String xStr = parseJsonField(json, "x");
+            String zStr = parseJsonField(json, "z");
+            try {
+                cx = Integer.parseInt(xStr);
+                cz = Integer.parseInt(zStr);
+            } catch (NumberFormatException ignored) {}
+            
+            java.util.List<Integer> blocks = parseJsonBlocks(json);
+            allBlocks.add(blocks);
+            coords.add(new int[]{cx, cz});
+            estimatedSize += 12 + (blocks.size() / 5) * 8;
+        }
+        
+        java.nio.ByteBuffer buffer = java.nio.ByteBuffer.allocate(estimatedSize);
+        buffer.order(java.nio.ByteOrder.LITTLE_ENDIAN);
+        
+        buffer.putInt(coords.size()); // chunksCount
+        
+        for (int i = 0; i < coords.size(); i++) {
+            int[] coord = coords.get(i);
+            java.util.List<Integer> blocks = allBlocks.get(i);
+            int blocksCount = blocks.size() / 5;
+            
+            buffer.putInt(coord[0]); // x
+            buffer.putInt(coord[1]); // z
+            buffer.putInt(blocksCount); // blocksCount
+            
+            for (int j = 0; j < blocks.size(); j += 5) {
+                int bx = blocks.get(j);
+                int by = blocks.get(j+1);
+                int bz = blocks.get(j+2);
+                int bid = blocks.get(j+3);
+                int bfaces = blocks.get(j+4);
+                
+                buffer.put((byte) bx);
+                buffer.putShort((short) by);
+                buffer.put((byte) bz);
+                buffer.putShort((short) bid);
+                buffer.putShort((short) bfaces);
+            }
+        }
+        
+        return buffer.array();
+    }
+
     private void onServerStarted(ServerStartedEvent event) {
         minecraftServer = event.getServer();
         String worldName = minecraftServer.getWorldData().getLevelName();
@@ -463,5 +766,39 @@ public class RealTimeMap {
         minecraftServer = null;
         MapDatabase.close();
         LOGGER.info("RealTimeMap: Minecraft Server stopped, API suspended.");
+    }
+
+    private void onBlockBreak(final net.neoforged.neoforge.event.level.BlockEvent.BreakEvent event) {
+        if (event.getLevel() instanceof ServerLevel serverLevel) {
+            net.minecraft.core.BlockPos pos = event.getPos();
+            String dim = serverLevel.dimension().location().toString();
+            MapDatabase.deleteChunk(dim, pos.getX() >> 4, pos.getZ() >> 4);
+        }
+    }
+
+    private void onBlockPlace(final net.neoforged.neoforge.event.level.BlockEvent.EntityPlaceEvent event) {
+        if (event.getLevel() instanceof ServerLevel serverLevel) {
+            net.minecraft.core.BlockPos pos = event.getPos();
+            String dim = serverLevel.dimension().location().toString();
+            MapDatabase.deleteChunk(dim, pos.getX() >> 4, pos.getZ() >> 4);
+        }
+    }
+
+    private void onExplosionDetonate(final net.neoforged.neoforge.event.level.ExplosionEvent.Detonate event) {
+        if (event.getLevel() instanceof ServerLevel serverLevel) {
+            String dim = serverLevel.dimension().location().toString();
+            java.util.Set<Integer> chunksToInvalidate = new java.util.HashSet<>();
+            for (net.minecraft.core.BlockPos pos : event.getAffectedBlocks()) {
+                int cx = pos.getX() >> 4;
+                int cz = pos.getZ() >> 4;
+                int packed = (cx & 0xFFFF) | ((cz & 0xFFFF) << 16);
+                chunksToInvalidate.add(packed);
+            }
+            for (int packed : chunksToInvalidate) {
+                int cx = (short)(packed & 0xFFFF);
+                int cz = (short)((packed >> 16) & 0xFFFF);
+                MapDatabase.deleteChunk(dim, cx, cz);
+            }
+        }
     }
 }

@@ -11,6 +11,7 @@
         const originalWarn = console.warn;
         const originalError = console.error;
         const apiBase = window.location.port === '5173' ? 'http://localhost:8080' : '';
+        const logQueue = [];
 
         function sendLog(level, args) {
           const apiKey = localStorage.getItem('rtm_api_key') || '';
@@ -23,16 +24,29 @@
 
           if (msg.includes('/api/log') || msg.includes('Failed to fetch')) return;
 
+          logQueue.push({ level: level, msg: `[${new Date().toISOString()}] [${level.toUpperCase()}] ${msg}` });
+        }
+
+        function flushLogs() {
+          if (logQueue.length === 0) return;
+          const batch = [...logQueue];
+          logQueue.length = 0;
+
+          const apiKey = localStorage.getItem('rtm_api_key') || '';
           const headers = { 'Content-Type': 'application/json' };
           if (apiKey) headers['X-API-Key'] = apiKey;
+
+          const combinedMsg = batch.map(item => item.msg).join('\n');
 
           fetch(apiBase + '/api/log', {
             method: 'POST',
             headers: headers,
-            body: JSON.stringify({ level: level, msg: msg }),
+            body: JSON.stringify({ level: 'BATCH', msg: combinedMsg }),
             mode: 'cors'
           }).catch(() => {});
         }
+
+        setInterval(flushLogs, 5000);
 
         console.log = function() {
           originalLog.apply(console, arguments);
@@ -48,8 +62,8 @@
         };
       })();
     </script>
-    <script type="module" crossorigin src="/assets/index-CfPpyFfd.js"></script>
-    <link rel="stylesheet" crossorigin href="/assets/index-CPcOqauU.css">
+    <script type="module" crossorigin src="/assets/index-jOEhNRch.js"></script>
+    <link rel="stylesheet" crossorigin href="/assets/index-BbpOzp13.css">
   </head>
   <body>
     <div id="root"></div>
